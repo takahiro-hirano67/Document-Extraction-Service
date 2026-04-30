@@ -1,0 +1,82 @@
+[project]
+name = "document-extraction-service"
+version = "0.1.0"
+description = "アップロードされた文書からテキストを抽出する処理を提供します。"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "docling>=2.92.0", # 高精度文書解析
+    "fastapi[standard]>=0.136.1", # FastAPI
+    "openpyxl>=3.1.5", # XLSX処理
+    "lxml>=6.1.0", # XML処理
+    "types-lxml>=2026.2.16", # XML型
+    "python-pptx>=1.0.2", # PPTX処理
+    "python-docx>=1.2.0", # DOCX処理
+    "ollama>=0.6.2", # Ollama(VLM用)
+    "torch>=2.11.0", # 多次元配列の処理
+    "torchvision>=0.26.0", # 画像データの処理
+    # --- Mac (Apple Silicon) 環境専用の依存関係 ---
+    "ocrmac>=1.0.1; sys_platform == 'darwin'",
+    "mlx>=0.31.2; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "mlx-lm>=0.31.3; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "mlx-vlm>=0.4.4; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.2.0",
+    "jupyter>=1.1.1",
+    "ruff>=0.15.12",
+]
+
+# --- Ruff全体の設定 ---
+[tool.ruff]
+# 対象のPythonバージョン
+target-version = "py313"
+# 1行の最大文字数
+line-length = 120
+
+# 除外するディレクトリ
+exclude = [
+    ".venv",
+    ".git",
+    "__pycache__",
+    "build",
+    "dist",
+    "notebooks",
+]
+
+# --- Ruffのルールに関する設定 ---
+[tool.ruff.lint]
+# 有効にするルール
+select = [
+    "F",   # Pyflakes (未定義・未使用の変数やインポート)
+    "E",   # pycodestyle Error (スタイルガイド(PEP8)に沿っているか)
+    "W",   # pycodestyle Warning (スタイルガイド(PEP8)に沿っているか)
+    "I",   # isort (import順序の最適化)
+    "N",   # pep8-naming (関数や変数の命名がスタイルガイド(PEP8)に従っているか)
+    "D",   # pydocstyle (ドキュメンテーション文字列(Docstring)に関するルール)
+    "UP",  # pyupgrade (新しいPython記法への自動アップデート)
+    "B",   # flake8-bugbear (バグになりやすい問題や設計上の問題を検出)
+    "S",   # flake8-bandit (evalなどの安全ではないコードを検出)
+    "SIM", # flake8-simplify (コードをシンプルにできる箇所の指摘 | ネストされたif文など)
+    "ANN", # flake8-annotations (型ヒントに関するルール)
+    "TCH",  # flake8-type-checking (型チェック用インポートの最適化)
+]
+
+# 無視するルール
+ignore = [
+    "E501", # 1行あたりの行の長さのルール (Formatterに任せるためLintでは無視)
+    "B008", # デフォルト引数で関数呼び出しをしないルール (FastAPIのQuery()と競合するため無効)
+    "D203", # クラス定義の前に空行を入れるルール (D211(クラス定義の前に空行を入れてはいけないルール)と競合するため無効)
+    "D213", # Docstringの要約行の位置を2行目にするルール (D212(要約行の位置を1行目にするルール)と競合するため無効)
+    "D400", # Docstringの1行目にピリオドを付けるルール (日本語の文章と競合するため無効)
+    "D415", # Docstringの1行目の末尾に符号を付けるルール（日本語の文章と競合するため無効）
+]
+
+# --- Ruffによるフォーマットの設定 ---
+[tool.ruff.format]
+# ダブルクォーテーションに統一
+quote-style = "double"
+# インデントはスペース
+indent-style = "space"
