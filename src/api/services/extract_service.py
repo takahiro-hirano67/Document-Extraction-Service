@@ -1,15 +1,14 @@
-# src/api/domains/extract/services/extract_service.py
+# src/api/services/extract_service.py
 
 """テキスト抽出APIのサービスクラス
 
 PDF, DOCX, XLSXファイルからメモリ上でテキストを抽出するロジックを提供します。
 """
 
-# 型チェック時以外は型ヒントを文字列として認識させる
-from __future__ import annotations
 
 import io
-from typing import TYPE_CHECKING
+
+from fastapi import UploadFile
 
 # ファイル形式別テキスト抽出処理モジュール
 from ..extractors.docx_extractor import extract_from_docx
@@ -19,20 +18,13 @@ from ..extractors.pptx_extractor import extract_from_pptx
 from ..extractors.text_extractor import extract_from_text
 from ..extractors.xlsx_extractor import extract_from_xlsx
 
-# 型チェック時のみインポートするブロック
-if TYPE_CHECKING:
-    from typing import Literal
 
-    from fastapi import UploadFile
-
-
-def extract_text_from_file(file: UploadFile, extension: str, mode: Literal["standard", "deep"]) -> str:
+def extract_text_from_file(file: UploadFile, extension: str) -> str:
     """アップロードされたファイルからテキストを抽出する
 
     Args:
         file (UploadFile): FastAPIから受け取ったアップロードファイルオブジェクト
         extension (str): 小文字化された拡張子 (例: '.pdf')
-        mode (Literal["standard", "deep"]): 抽出モード
 
     Returns:
         str: 抽出されたテキスト

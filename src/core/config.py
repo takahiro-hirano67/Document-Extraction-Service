@@ -1,6 +1,6 @@
 # src/core/config.py
 
-"""共通設定・環境変数の読み込み / GPU識別"""
+"""共通設定・環境変数の読み込み / アクセラレーター識別"""
 
 import torch
 from pydantic import Field
@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     SELF_PORT: str = Field(..., description="ポート番号", examples=["8001"])
     ACCESS_ALLOW_URL: str = Field(..., description="通信を許可するURL", examples=["http://localhost:8000"])
     OLLAMA_URL: str = Field(..., description="Ollamaの接続URL")
+    MAX_FILE_SIZE_MB: int = Field(20, description="許可する最大ファイルサイズ(MB)")
+    MAX_UNCOMPRESSED_SIZE_MB: int = Field(100, description="Zip展開後の最大ファイルサイズ(MB) -> ZipBomb対策")
 
     # None許容の値
     HF_TOKEN: str | None = Field(None, description="HuggingFaceのアクセストークン(モデルダウンロード用)")

@@ -12,7 +12,7 @@ from docling_core.types.io import DocumentStream
 
 from src.core.model_state import model_state
 
-from ..utils.text_cleaner import clean_docling_markdown
+from ..cleaners.text_cleaner import clean_docling_markdown
 
 
 def extract_from_pdf_with_docling(file_stream: io.BytesIO) -> str:

@@ -6,9 +6,8 @@
 """
 
 from dataclasses import dataclass
-from typing import Literal
 
-from fastapi import File, Query, UploadFile
+from fastapi import File, UploadFile
 from pydantic import BaseModel, Field
 
 # ==========================================
@@ -20,7 +19,6 @@ class ExtractTextRequest:
     """テキスト抽出APIのリクエストパラメータ"""
 
     file: UploadFile = File(..., description="抽出対象のファイル (PDF, DOCX, XLSX)")
-    mode: Literal["standard", "deep"] = Query(default="standard",  description="抽出オプション(PDFのみ高精度抽出が可能)")
 
 
 # ==========================================
@@ -35,4 +33,3 @@ class ExtractTextResponse(BaseModel):
     filename: str = Field(..., description="アップロードされたファイル名", examples=["document.pdf"])
     file_type: str = Field(..., description="判定されたファイル形式", examples=["pdf"])
     extracted_text: str = Field(..., description="抽出されたテキスト全文")
-    char_count: int = Field(..., description="抽出された文字数")
