@@ -13,7 +13,7 @@ export
 
 # FastAPIサーバー起動 (uvicorn)
 run:
-	uv run uvicorn src.main:app --host 0.0.0.0 --port ${PORT} --reload
+	uv run uvicorn src.main:app --host 0.0.0.0 --port ${SELF_PORT} --reload
 
 # ==========================================
 # Ruff操作
@@ -44,7 +44,7 @@ help:
 	@echo "使用可能なコマンド一覧:"
 	@echo ""
 	@echo "  [Uvicorn] サーバー起動"
-	@echo "  make run            FastAPIサーバー起動 (ポート番号: ${PORT})"
+	@echo "  make run            FastAPIサーバー起動 (ポート番号: ${SELF_PORT})"
 	@echo ""
 	@echo "  [Ruff] 静的解析・フォーマット"
 	@echo "  make format         コードの自動フォーマット実行"

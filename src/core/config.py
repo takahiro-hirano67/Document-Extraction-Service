@@ -14,8 +14,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # .env から直接読み取る値
-    PORT: str = Field(..., description="ポート番号", examples=["8001"])
+    SELF_PORT: str = Field(..., description="ポート番号", examples=["8001"])
     ACCESS_ALLOW_URL: str = Field(..., description="通信を許可するURL", examples=["http://localhost:8000"])
+    OLLAMA_URL: str = Field(..., description="Ollamaの接続URL")
 
     # None許容の値
     HF_TOKEN: str | None = Field(None, description="HuggingFaceのアクセストークン(モデルダウンロード用)")

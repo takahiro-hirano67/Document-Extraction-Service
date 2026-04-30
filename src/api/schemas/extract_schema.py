@@ -1,4 +1,4 @@
-# src/api/shared_modules/schemas/extract_schema.py
+# src/api/schemas/extract_schema.py
 
 """テキスト抽出APIで使用するスキーマ定義
 
@@ -6,20 +6,21 @@
 """
 
 from dataclasses import dataclass
+from typing import Literal
 
-from fastapi import File, UploadFile
+from fastapi import File, Query, UploadFile
 from pydantic import BaseModel, Field
 
 # ==========================================
 # リクエストの型
 # ==========================================
 
-
 @dataclass
 class ExtractTextRequest:
     """テキスト抽出APIのリクエストパラメータ"""
 
     file: UploadFile = File(..., description="抽出対象のファイル (PDF, DOCX, XLSX)")
+    mode: Literal["standard", "deep"] = Query(default="standard",  description="抽出オプション(PDFのみ高精度抽出が可能)")
 
 
 # ==========================================

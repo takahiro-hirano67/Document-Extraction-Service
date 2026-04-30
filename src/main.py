@@ -11,8 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 # ルーター
-from src.api.mode.deep import deep_router
-from src.api.mode.vision import vision_router
+from src.api import extract_router
 
 # 環境変数・状態管理
 from src.core.config import device, settings
@@ -129,9 +128,7 @@ app.add_middleware(
 # ルーター登録
 # ==========================================
 
-app.include_router(deep_router.router)  # 高精度テキスト抽出API
-app.include_router(vision_router.router)  # 高精度テキスト抽出API
-# app.include_router(standard_router.router)  # 軽量テキスト抽出API
+app.include_router(extract_router.router)  # テキスト抽出API
 
 
 # ==========================================
@@ -170,4 +167,4 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 @app.get("/", tags=["動作確認"])
 def read_root() -> dict:
     """ルートページ"""
-    return {"document": f"http://localhost:{settings.PORT}/docs"}
+    return {"document": f"http://localhost:{settings.SELF_PORT}/docs"}

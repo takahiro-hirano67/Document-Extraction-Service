@@ -46,34 +46,26 @@ Document-Extraction-Service
 
 <directory_structure>
 data/
-  sample_docx_data/
-    __DOCX形式のサンプル__
-  sample_patent_pdf_data/
-    __特許公報PDFのサンプル__
-  sample_pdf_data/
-    __PDF形式のサンプル__
-  sample_xlsx_data/
-    __XLSX形式のサンプル__
   __検証用のサンプルデータ配置__
 notebooks/
   __開発検証用ノートブック__
 src/
   api/
-    mode/
-      deep/
-        services/
-          deep_service.py
-        utils/
-          markdown_cleaner.py
-        __高精度抽出モード__
-        deep_router.py
-      standard/
-        __標準抽出モード__
-      __抽出モード別の処理実装__
-    shared_modules/
-      schemas/
-        extract_schema.py
-      __共有モジュール__
+    extractors/
+      docx_extractor.py
+      image_extractor.py
+      pdf_extractor_docling.py
+      pdf_extractor.py
+      pptx_extractor.py
+      text_extractor.py
+      xlsx_extractor.py
+    schemas/
+      extract_schema.py
+    services/
+      extract_service.py
+    utils/
+      text_cleaner.py
+    extract_router.py
   core/
     __環境変数等__
     config.py
@@ -89,22 +81,6 @@ README.md
 <files>
 This section contains the contents of the repository's files.
 
-<file path="data/sample_docx_data/__DOCX形式のサンプル__">
-
-</file>
-
-<file path="data/sample_patent_pdf_data/__特許公報PDFのサンプル__">
-
-</file>
-
-<file path="data/sample_pdf_data/__PDF形式のサンプル__">
-
-</file>
-
-<file path="data/sample_xlsx_data/__XLSX形式のサンプル__">
-
-</file>
-
 <file path="data/__検証用のサンプルデータ配置__">
 
 </file>
@@ -113,36 +89,430 @@ This section contains the contents of the repository's files.
 
 </file>
 
-<file path="src/api/mode/deep/services/deep_service.py">
-# src/api/mode/deep/services/deep_service.py
+<file path="src/api/extractors/docx_extractor.py">
+# src/api/extractors/docx_extractor.py
 
-"""高精度テキスト抽出のサービスクラス
+"""Wordファイル(.docx)からテキストを抽出するモジュール"""
 
-Doclingを利用してPDFファイルからテキスト（Markdown）を抽出します。
-インメモリでのストリーム処理およびMarkdownの整形を行います。
+import io
+import re
+from collections.abc import Iterator
+
+from docx import Document as Open_Docx
+from docx.document import Document
+from docx.oxml.ns import qn
+from docx.oxml.table import CT_Tbl
+from docx.oxml.text.paragraph import CT_P
+from docx.oxml.xmlchemy import BaseOxmlElement
+from docx.table import Table
+
+# ==========================================
+# XML名前空間の定義
+# ==========================================
+
+# BaseOxmlElement.xpath() は docx.oxml.ns.nsmap を内部で自動適用するため、
+# 呼び出し側での名前空間マッピングの指定は不要。
+# w: および a: プレフィックスはそのまま XPath 式中で使用可能。
+
+# ==========================================
+# パブリック関数
+# ==========================================
+
+
+def extract_from_docx(file_stream: io.BytesIO) -> str:
+    """Wordファイルからテキストを抽出する
+
+    抽出順序:
+        1. ヘッダー (セクション順)
+        2. 本文 (段落・表・図形テキストを出現順に維持)
+        3. フッター (セクション順)
+
+    Args:
+        file_stream (io.BytesIO): Wordファイルのバイトストリーム
+
+    Returns:
+        str: 抽出されたテキスト全文
+
+    """
+    document = Open_Docx(file_stream)
+
+    extracted_lines: list[str] = []
+
+    # --- ヘッダーの抽出 (本文より前に付加) ---
+    header_lines = _extract_header_text(document)
+    if header_lines:
+        extracted_lines.extend(header_lines)
+
+    # --- 本文の抽出 (段落・表・図形テキストを出現順に維持) ---
+    body_lines = list(_extract_body_text_in_order(document))
+    if body_lines:
+        extracted_lines.extend(body_lines)
+
+    # --- フッターの抽出 (本文より後に付加) ---
+    footer_lines = _extract_footer_text(document)
+    if footer_lines:
+        extracted_lines.extend(footer_lines)
+
+    # 各行を改行で結合し、連続する空白行を1行に正規化する
+    # （2行以上連続する空白行 → 1行の空白行）
+    joined_text = "\n".join(extracted_lines)
+    normalized_text = re.sub(r"\n{3,}", "\n\n", joined_text)
+
+    return normalized_text
+
+
+# ==========================================
+# プライベート関数: 通常テキストと数式の抽出
+# ==========================================
+
+
+def _extract_text_with_math(element: BaseOxmlElement) -> str:
+    """XML要素から通常テキストと数式(OMML)を漏れなく抽出する
+
+    python-docx標準のプロパティ(.text)は数式要素(<m:oMath>)を無視するため、
+    XPathを用いて w:t (通常テキスト) と m:t (数式テキスト) を統合して抽出する。
+    """
+    text_parts: list[str] = []
+
+    tag_w_tab = qn("w:tab")
+    tag_w_br = qn("w:br")
+
+    # テキスト、数式、タブ、改行を文書の出現順序で取得
+    for node in element.xpath(".//w:t | .//m:t | .//w:tab | .//w:br"):
+        if node.tag == tag_w_tab:
+            text_parts.append(" ")  # 視認性のためタブはスペース化
+        elif node.tag == tag_w_br:
+            text_parts.append("\n")  # 明示的な改行タグ
+        elif node.text:
+            text_parts.append(node.text)
+
+    return "".join(text_parts).strip()
+
+
+# ==========================================
+# プライベート関数: ヘッダー・フッター
+# ==========================================
+
+
+def _extract_header_text(document: Document) -> list[str]:
+    """全セクションのヘッダーからテキストを抽出する
+
+    同一テキストのヘッダーが複数セクションで繰り返されるケースが多いため、
+    重複を除去しながら抽出する。
+
+    Args:
+        document (Document): python-docxのDocumentオブジェクト
+
+    Returns:
+        list[str]: ヘッダーから抽出されたテキスト行のリスト
+
+    """
+    seen_header_texts: set[str] = set()
+    header_lines: list[str] = []
+
+    for section in document.sections:
+        for paragraph in section.header.paragraphs:
+            # テキストの抽出
+            text = _extract_text_with_math(paragraph._p)  # paragraph._p は基礎となるXML要素を表す
+            if text and text not in seen_header_texts:
+                seen_header_texts.add(text)
+                header_lines.append(text)
+
+    return header_lines
+
+
+def _extract_footer_text(document: Document) -> list[str]:
+    """全セクションのフッターからテキストを抽出する
+
+    同一テキストのフッターが複数セクションで繰り返されるケースが多いため、
+    重複を除去しながら抽出する。
+
+    Args:
+        document (Document): python-docxのDocumentオブジェクト
+
+    Returns:
+        list[str]: フッターから抽出されたテキスト行のリスト
+
+    """
+    seen_footer_texts: set[str] = set()
+    footer_lines: list[str] = []
+
+    for section in document.sections:
+        for paragraph in section.footer.paragraphs:
+            # テキストの抽出
+            text = _extract_text_with_math(paragraph._p)
+            if text and text not in seen_footer_texts:
+                seen_footer_texts.add(text)
+                footer_lines.append(text)
+
+    return footer_lines
+
+
+# ==========================================
+# プライベート関数: 本文 (出現順走査)
+# ==========================================
+
+
+def _extract_body_text_in_order(document: Document) -> Iterator[str]:
+    """本文要素を出現順に走査し、テキストを順次 yield する
+
+    body の直接子要素を走査し、段落・表・図形テキストを
+    ドキュメント上の出現順序を維持したまま抽出する。
+
+    図形テキスト (w:drawing) は CT_P (段落) の内部に存在するため、
+    段落の処理内で同時に抽出することで順序を保証する。
+
+    Args:
+        document (Document): python-docxのDocumentオブジェクト
+
+    Yields:
+        str: 抽出されたテキスト行
+
+    """
+    body_element = getattr(document.element, "body", None)
+
+    # 万が一bodyが存在しない（破損したファイル等）場合は抽出をスキップ
+    if body_element is None:
+        return
+
+    for child_element in body_element.iterchildren():
+        if isinstance(child_element, CT_P):
+            # 要素が「段落」の場合:
+            # 段落テキストと、段落内の図形テキストをまとめて抽出する
+            yield from _extract_paragraph_and_shapes(child_element)
+
+        elif isinstance(child_element, CT_Tbl):
+            # 要素が「表」の場合
+            table = Table(child_element, document)
+            markdown_table = _table_to_markdown(table)
+            if markdown_table:
+                # 表の前後に見やすくするための空行（\n）を確保する目的で追加
+                yield f"\n{markdown_table}\n"
+
+
+def _extract_paragraph_and_shapes(
+    paragraph_element: CT_P,
+) -> Iterator[str]:
+    """段落要素から本文テキストと図形テキストをまとめて抽出する
+
+    段落内に w:drawing が含まれる場合、テキストボックス・図形テキストも
+    この段落の処理内で抽出することで、本文との出現順序を保証する。
+
+    Args:
+        paragraph_element (CT_P): 段落のXML要素
+        document (Document): python-docxのDocumentオブジェクト
+
+    Yields:
+        str: 抽出されたテキスト行
+
+    """
+    # 段落の本文テキストを抽出する
+    # 空段落（テキストなし）も "" として yield することで、
+    # 文書上の空白行をテキスト中に反映させる
+    paragraph_text = _extract_text_with_math(paragraph_element)
+    has_drawing = bool(paragraph_element.findall(f".//{qn('w:drawing')}"))
+
+    if paragraph_text or not has_drawing:
+        # テキストあり: そのまま yield
+        # テキストなし かつ 図形なし: 空白行として "" を yield
+        yield paragraph_text
+
+    # 段落内に図形 (w:drawing) が存在する場合、図形テキストを抽出する
+    # w:drawing は CT_P の内部に含まれるため、ここで処理することで出現順序を保証する
+    drawing_elements = paragraph_element.findall(
+        f".//{qn('w:drawing')}",
+    )
+    for drawing_element in drawing_elements:
+        yield from _extract_shape_text_from_drawing(drawing_element)
+
+
+def _extract_shape_text_from_drawing(
+    drawing_element: BaseOxmlElement,
+) -> Iterator[str]:
+    """w:drawing 要素から図形内テキストを抽出する
+
+    対象とする図形テキストのパターン:
+        - w:txbxContent: テキストボックス (Wordの「テキストボックス挿入」)
+        - a:t: DrawingML図形内テキスト (図形の「テキストを追加」、SmartArt)
+
+    Args:
+        drawing_element (BaseOxmlElement): w:drawing のXML要素。
+            BaseOxmlElement.xpath() は namespaces 引数不要で Open XML 標準 nsmap を自動適用する。
+
+    Yields:
+        str: 抽出されたテキスト行
+
+    """
+    # --- テキストボックス (w:txbxContent) ---
+    textbox_content_elements = drawing_element.xpath(".//w:txbxContent")
+    for txbx in textbox_content_elements:
+        text = _extract_text_with_math(txbx)
+        if text:
+            yield text
+
+    # --- DrawingML図形・SmartArt (a:t) ---
+    # ただし、テキストボックス内の a:t は上記で取得済みのため除外する
+    # w:txbxContent の外側にある a:t のみを対象とする
+    all_drawing_ml_text_elements = drawing_element.xpath(
+        ".//a:t",
+    )
+    textbox_content_elements = drawing_element.xpath(
+        ".//w:txbxContent",
+    )
+
+    for drawing_ml_text_element in all_drawing_ml_text_elements:
+        # このa:tがいずれかのテキストボックス内に含まれているか確認する
+        is_inside_textbox = any(
+            _is_descendant_of(drawing_ml_text_element, textbox_content_element)
+            for textbox_content_element in textbox_content_elements
+        )
+        if not is_inside_textbox:
+            text = (drawing_ml_text_element.text or "").strip()
+            if text:
+                yield text
+
+
+def _is_descendant_of(
+    target_element: BaseOxmlElement,
+    ancestor_element: BaseOxmlElement,
+) -> bool:
+    """target_element が ancestor_element の子孫であるかを判定する
+
+    Args:
+        target_element (BaseOxmlElement): 判定対象の要素
+        ancestor_element (BaseOxmlElement): 祖先かどうか確認する要素
+
+    Returns:
+        bool: target_element が ancestor_element の子孫であれば True
+
+    """
+    current_element = target_element.getparent()
+    while current_element is not None:
+        if current_element is ancestor_element:
+            return True
+        current_element = current_element.getparent()
+    return False
+
+
+# ==========================================
+# プライベート関数: 表のMarkdown変換
+# ==========================================
+
+
+def _table_to_markdown(table: Table) -> str:
+    """python-docxのTableオブジェクトをMarkdownの表形式に変換する
+
+    Args:
+        table (Table): python-docxのTableオブジェクト
+
+    Returns:
+        str: Markdown形式の表文字列。行が存在しない場合は空文字列を返す。
+
+    """
+    if not table.rows:
+        return ""
+
+    markdown_lines: list[str] = []
+
+    for row_index, row in enumerate(table.rows):
+        # セル内の改行をスペースに置換し、Markdown構文を壊さないようパイプ(|)をエスケープ
+        row_cells = [
+            _extract_text_with_math(cell._tc).replace("\n", " ").replace("|", "\\|").strip() for cell in row.cells
+        ]
+        markdown_lines.append("| " + " | ".join(row_cells) + " |")
+
+        # 1行目（ヘッダー）の直後にMarkdownの区切り線を追加
+        if row_index == 0:
+            separator_cells = ["---"] * len(row.cells)
+            markdown_lines.append("| " + " | ".join(separator_cells) + " |")
+
+    return "\n".join(markdown_lines)
+</file>
+
+<file path="src/api/extractors/image_extractor.py">
+# src/api/extractors/image_extractor.py
+
+"""画像ファイルテキスト抽出モジュール
+
+Ollama (VLM) を利用して、画像ファイルからテキストを抽出します。
 """
 
-import asyncio
+import logging
+
+from ollama import Client, ResponseError
+
+from src.core.config import settings
+
+logger = logging.getLogger(__name__)
+
+MODEL_NAME = "glm-ocr"  # 使用するモデル名
+PROMPT = "Text Recognition:"  # GLM-OCR推奨プロンプト
+
+
+def extract_from_image(file_content: bytes) -> str | None:
+    """画像ファイルのバイトデータを受け取り、テキストを抽出する
+
+    Args:
+        file_content (bytes): 画像ファイルのバイトデータ
+
+    Returns:
+        str: 抽出・解析されたMarkdownテキスト
+
+    Raises:
+        RuntimeError: Ollamaサーバーへの接続や推論に失敗した場合
+
+    """
+    # 同期クライアントの初期化
+    client = Client(host=settings.OLLAMA_URL)
+
+    logger.info(f"Ollama ({MODEL_NAME}) による画像解析を開始します...")
+
+    try:
+        response = client.chat(
+            model=MODEL_NAME,
+            messages=[
+                {
+                    "role": "user",
+                    "content": PROMPT,  # GLM-OCR推奨プロンプト
+                    "images": [file_content],  # バイトデータを直接渡す
+                }
+            ],
+        )
+        if response.message.content is not None:
+            return response.message.content
+
+    except ResponseError as error:
+        raise RuntimeError(f"Ollamaでの推論に失敗しました: {error}") from error
+    except Exception as error:
+        raise RuntimeError("画像解析サーバー(Ollama)への接続に失敗しました。") from error
+</file>
+
+<file path="src/api/extractors/pdf_extractor_docling.py">
+# src/api/extractors/pdf_extractor_docling.py
+
+"""PDFファイル(.pdf)からDoclingでテキストを抽出するモジュール
+
+Doclingを利用してPDFファイルからテキスト（Markdown）を抽出します。
+インメモリでのストリーム処理を行います。
+"""
+
 import io
 
 from docling_core.types.io import DocumentStream
-from fastapi import UploadFile
 
 from src.core.model_state import model_state
 
-# 補助処理
-from ..utils.markdown_cleaner import clean_markdown
+from ..utils.text_cleaner import clean_markdown, normalize_text
 
 
-async def extract_markdown_with_docling(upload_file: UploadFile, extension: str) -> str:
+def extract_from_pdf_with_docling(file_stream: io.BytesIO) -> str:
     """アップロードされたファイルからDoclingを用いてMarkdownを抽出する
 
     Args:
-        upload_file (UploadFile): FastAPIから受け取ったアップロードファイルオブジェクト
-        extension (str): 小文字化された拡張子 (例: '.pdf')
+        file_stream(io.BytesIO): PDF ファイルの BytesIO ストリーム
 
     Returns:
-        str: 抽出・構造化された正規化済みMarkdownテキスト
+        str: 抽出・構造化されたMarkdownテキスト
 
     Raises:
         RuntimeError: Doclingのコンバーターが初期化されていない場合
@@ -151,174 +521,578 @@ async def extract_markdown_with_docling(upload_file: UploadFile, extension: str)
     if model_state.converter is None:
         raise RuntimeError("Docling converter is not initialized.")
 
-    # --- 1. ファイルをメモリ(BytesIO)に読み込む ---
-    await upload_file.seek(0)
-    file_content = await upload_file.read()
-    pdf_stream = io.BytesIO(file_content)
+    # --- 1. DoclingのDocumentStreamオブジェクトを生成 ---
+    doc_stream = DocumentStream(name="input.pdf", stream=file_stream)
 
-    # --- 2. DoclingのDocumentStreamオブジェクトを生成 ---
-    # ファイル名が存在しない場合はフォールバックとして "例: input.pdf" を設定
-    safe_filename = upload_file.filename if upload_file.filename else f"input{extension}"
-    doc_stream = DocumentStream(name=safe_filename, stream=pdf_stream)
+    # --- 2. Doclingによる抽出処理 ---
+    conversion_result = model_state.converter.convert(doc_stream)
 
-    # --- 3. Doclingによる抽出処理 ---
-    # convert()は同期処理で重いため、イベントループをブロックしないよう別スレッドで実行する
-    conversion_result = await asyncio.to_thread(
-        model_state.converter.convert,
-        doc_stream,
-    )
+    # --- 3. Markdown形式での出力 ---
+    markdown_text = conversion_result.document.export_to_markdown()
 
-    # --- 4. Markdown形式での出力 ---
-    raw_markdown = conversion_result.document.export_to_markdown()
+    # --- 4. Markdown出力の整形 ---
+    markdown_text = normalize_text(markdown_text)
+    markdown_text = clean_markdown(markdown_text)
 
-    # --- 5. Markdown出力の整形 ---
-    cleaned_markdown = clean_markdown(raw_markdown)
-
-    return cleaned_markdown.strip()
+    return markdown_text.strip()
 </file>
 
-<file path="src/api/mode/deep/utils/markdown_cleaner.py">
-# src/api/mode/deep/utils/markdown_cleaner.py
+<file path="src/api/extractors/pdf_extractor.py">
+# src/api/extractors/pdf_extractor.py
 
-"""テキスト整形モジュール"""
+"""PDFファイル(.pdf)からテキストを抽出するモジュール"""
 
-import re
+import io
+
+import pypdfium2 as pdfium
+
+from ..utils.text_cleaner import normalize_text
 
 
-def clean_markdown(content: str) -> str:
-    """抽出されたMarkdownテキストを、LLMやフロントエンドが解釈しやすい形に正規化する
+def extract_from_pdf(file_stream: io.BytesIO) -> str:
+    """PDFからテキストを抽出する (pypdfium2を使用)"""
+    # BytesIO → PDFドキュメント読み込み
+    pdf = pdfium.PdfDocument(file_stream)
 
-    Args:
-        content (str): Doclingから出力された生のMarkdownテキスト
+    pdf_texts = []
 
-    Returns:
-        str: 正規化されたMarkdownテキスト
+    # 全ページをループ
+    for page in pdf:
+        textpage = page.get_textpage()
+        pdf_text = textpage.get_text_range()
+        pdf_texts.append(pdf_text)
 
-    """
-    if not content:
-        return ""
+    text = "\n".join(pdf_texts)
+    text = normalize_text(text)
 
-    processed_content = content
-
-    # 1. 数式デリミタの正規化
-    # Doclingが出力する \[ ... \] や \( ... \) を $$...$$ や $...$ に変換
-    processed_content = re.sub(r"\\\[([\s\S]*?)\\\]", r"$$\1$$", processed_content)
-    processed_content = re.sub(r"\\\(([\s\S]*?)\\\)", r"$\1$", processed_content)
-
-    # 2. KaTeX Aligned Fix (数式の描画エラー防止)
-    # 数式内に '&' (整列) があり、かつ環境指定(\begin)がない場合、自動的に aligned 環境で囲む
-    def align_replacer(match: re.Match) -> str:
-        equation = match.group(1)
-        # 既に環境指定(\begin)がある場合は何もしない
-        if "\\begin" in equation:
-            return match.group(0)
-
-        # '&' (整列タブ) が含まれている場合、補正対象とする
-        if "&" in equation:
-            return f"$$\n\\begin{{aligned}}\n{equation}\n\\end{{aligned}}\n$$"
-
-        return match.group(0)
-
-    processed_content = re.sub(r"\$\$([\s\S]*?)\$\$", align_replacer, processed_content)
-
-    # 3. コードブロックの正規化
-    # コードブロックの ``` の直前に改行がないと正しくパースされない場合への対処
-    processed_content = re.sub(r"([^\n])```", r"\1\n```", processed_content)
-
-    return processed_content
+    return text.strip()
 </file>
 
-<file path="src/api/mode/deep/__高精度抽出モード__">
+<file path="src/api/extractors/pptx_extractor.py">
+# src/api/extractors/pptx_extractor.py
 
-</file>
+"""PowerPointファイル(.pptx)からテキストを抽出するモジュール
 
-<file path="src/api/mode/deep/deep_router.py">
-# src/api/mode/deep/deep_router.py
-
-"""高精度テキスト抽出APIのエンドポイント定義
-
-DoclingとMPS(GPU)を活用し、テーブル構造などを保持したままテキストを抽出します。
+スライド内のテキスト（テキストボックス、図形、表）およびスライドノートを抽出します。
+グループ化された図形内のテキストも再帰的に取得します。
 """
 
-from pathlib import Path
+from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+import re
+from typing import TYPE_CHECKING, Any
 
-# スキーマ
-from src.api.shared_modules.schemas.extract_schema import ExtractTextRequest, ExtractTextResponse
+from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 
-# サービスロジック
-from .services import deep_service
+if TYPE_CHECKING:
+    import io
+    from collections.abc import Iterator
 
-router = APIRouter(prefix="/extract", tags=["テキスト抽出"])
-
-# 許可する拡張子の定義 (Doclingは現在主にPDFに特化)
-ALLOWED_EXTENSIONS = {".pdf"}
+    from pptx.shapes.base import BaseShape
+    from pptx.table import Table
 
 
-@router.post(
-    path="/deep",
-    response_model=ExtractTextResponse,
-    response_model_exclude_none=True,
-    summary="【高精度】PDFからMarkdown形式でテキストを抽出するAPI",
-)
-async def extract_deep(
-    request: ExtractTextRequest = Depends(),
-) -> ExtractTextResponse:
-    """## 高精度テキスト抽出API (Docling稼働)
+def extract_from_pptx(file_stream: io.BytesIO) -> str:
+    """PowerPointファイルからテキストを抽出する
 
-    アップロードされたPDFから、Doclingエンジン（MPS/GPU対応）を利用してテキストを抽出します。
-    特許公報等の複雑なレイアウトやテーブル構造を維持したまま、Markdown形式で出力します。
+    抽出順序:
+        1. 各スライド内の図形・テキストボックス・表（グループ化図形含む）
+        2. スライドノート（存在する場合）
 
-    ### 仕様
-    - **処理時間**: 数秒〜数十秒かかる場合があります。
-    - **対応形式**: `.pdf`
-    - **一時保存**: 処理のためにサーバー内で一時ファイルとして保存されますが、レスポンス返却直後に破棄されます。
+    Args:
+        file_stream (io.BytesIO): PowerPointファイルのバイトストリーム
 
-    ### 注意点
-    - パフォーマンスを優先するため、ファイルサイズが極端に大きい場合はタイムアウトになる可能性があります。
+    Returns:
+        str: 抽出されたテキスト全文
+
     """
-    # --- 想定内の例外処理 (想定外はグローバル例外ハンドラに投げる) ---
-    # ファイル存在チェック
-    if not request.file.filename:
-        raise HTTPException(
-            status_code=400,
-            detail="ファイル名が取得できません。適切な拡張子を持つファイルをアップロードしてください。",
+    presentation = Presentation(file_stream)
+    extracted_lines: list[str] = []
+
+    for slide_index, slide in enumerate(presentation.slides, start=1):
+        extracted_lines.append(f"\n=== スライド {slide_index} ===\n")
+
+        # 図形のY座標・X座標を取得するヘルパー関数
+        def _get_shape_position(shape: BaseShape) -> tuple[int, int]:
+            top = getattr(shape, "top", 0) or 0
+            left = getattr(shape, "left", 0) or 0
+            # 多少の縦のズレを吸収し、同じ行とみなすためにY座標を丸める (100,000 EMU ≒ 約2.8mm)
+            return (round(top / 100000), left)
+
+        # スライド内の図形を「上から下」「左から右」の順にソートする
+        sorted_shapes = sorted(slide.shapes, key=_get_shape_position)
+
+        # ソート済みの図形を順次走査
+        for shape in sorted_shapes:
+            extracted_lines.extend(_extract_text_from_shape(shape))
+
+        # スライドノートの抽出
+        if slide.has_notes_slide and slide.notes_slide.notes_text_frame is not None:
+            notes_text = slide.notes_slide.notes_text_frame.text.strip()
+            if notes_text:
+                extracted_lines.append("\n【ノート】")
+                extracted_lines.append(notes_text)
+
+    # 各行を改行で結合し、連続する空白行を1行に正規化する
+    joined_text = "\n".join(extracted_lines)
+    normalized_text = re.sub(r"\n{3,}", "\n\n", joined_text)
+
+    return normalized_text.strip()
+
+
+def _extract_text_from_shape(shape: BaseShape) -> Iterator[str]:
+    """図形要素からテキストを抽出する（グループ図形の場合は再帰処理）
+
+    Pylance対策として、BaseShapeに定義されていない属性(shapes, table, text等)
+    へのアクセスには getattr() を使用して型エラーを回避します。
+
+    Args:
+        shape (BaseShape): python-pptxの図形オブジェクト
+
+    Yields:
+        str: 抽出されたテキスト行
+
+    """
+    # 1. グループ化された図形の場合、内部の図形を再帰的に処理
+    if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+        child_shapes = getattr(shape, "shapes", [])
+        for child_shape in child_shapes:
+            yield from _extract_text_from_shape(child_shape)
+
+    # 2. 表の場合、Markdown形式の表に変換
+    elif getattr(shape, "has_table", False):
+        table = getattr(shape, "table", None)
+        if table is not None:
+            markdown_table = _table_to_markdown(table)
+            if markdown_table:
+                yield f"\n{markdown_table}\n"
+
+    # 3. 通常のテキストフレーム（テキストボックス、図形内テキスト）の場合
+    elif getattr(shape, "has_text_frame", False):
+        text = getattr(shape, "text", "")
+        if text:
+            yield text.strip()
+
+
+def _table_to_markdown(table: Table) -> str:
+    """python-pptxのTableオブジェクトをMarkdownの表形式に変換する
+
+    Args:
+        table (Table): python-pptxのTableオブジェクト
+
+    Returns:
+        str: Markdown形式の表文字列。行が存在しない場合は空文字列を返す。
+
+    """
+    # Pylanceで _RowCollection が Iterable と認識されないため Any で受ける
+    rows: Any = getattr(table, "rows", [])
+    if not rows:
+        return ""
+
+    markdown_lines: list[str] = []
+
+    for row_index, row in enumerate(rows):
+        row_cells: list[str] = []
+        cells: Any = getattr(row, "cells", [])
+
+        for cell in cells:
+            text_frame = getattr(cell, "text_frame", None)
+            cell_text = getattr(text_frame, "text", "") if text_frame else ""
+            row_cells.append(cell_text.replace("\n", " ").replace("|", "\\|").strip())
+
+        markdown_lines.append("| " + " | ".join(row_cells) + " |")
+
+        # 1行目（ヘッダー）の直後にMarkdownの区切り線を追加
+        if row_index == 0:
+            separator_cells = ["---"] * len(row_cells)
+            markdown_lines.append("| " + " | ".join(separator_cells) + " |")
+
+    return "\n".join(markdown_lines)
+</file>
+
+<file path="src/api/extractors/text_extractor.py">
+# src/api/extractors/text_extractor.py
+
+"""テキストファイルからテキストを抽出するモジュール"""
+
+
+def extract_from_text(content: bytes) -> str:
+    """テキストファイルからテキストを抽出する"""
+    try:
+        # テキストファイルとしてデコード
+        return content.decode("utf-8")
+    except UnicodeDecodeError:
+        # UTF-8で読めない場合のフォールバック
+        return content.decode("shift_jis", errors="ignore")
+</file>
+
+<file path="src/api/extractors/xlsx_extractor.py">
+# src/api/extractors/xlsx_extractor.py
+
+"""Excelファイル(.xlsx)からテキストを抽出するモジュール
+
+セルのテキスト（openpyxl）と図形・テキストボックスのテキスト（lxml）を
+それぞれ抽出し、結合して返す。
+
+## 実装の要点
+
+- xlsx は ZIP 形式であり、図形テキストは DrawingML (xl/drawings/drawing*.xml) に格納されている
+- セル抽出には openpyxl、図形テキスト抽出と drawing→シート名マッピングには lxml を使用する
+- drawing ファイルとシートの対応は xl/_rels/workbook.xml.rels と
+  xl/worksheets/_rels/sheet*.xml.rels の 2 段階リレーションシップを辿って解決する
+
+## 備考
+
+- 取得できないもの: ワードアート、グループ化図形の一部、グラフ凡例テキスト
+- スキャン画像が貼り付けられたセルのテキストは OCR なしでは抽出不可
+"""
+
+# 型チェック時以外は型ヒントを文字列として認識させる
+from __future__ import annotations
+
+import re
+import zipfile
+from datetime import datetime
+from typing import TYPE_CHECKING
+
+from lxml import etree
+from openpyxl import load_workbook
+from openpyxl.cell.cell import MergedCell
+
+# 型チェック時のみインポートするブロック
+if TYPE_CHECKING:
+    import io
+
+    from openpyxl.cell.cell import Cell
+    from openpyxl.workbook.workbook import Workbook
+
+# ==========================================
+# 定数
+# ==========================================
+
+# DrawingML 名前空間
+_NS_DRAWING_MAIN: str = "http://schemas.openxmlformats.org/drawingml/2006/main"
+_NS_SPREADSHEET_DRAWING: str = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
+_NS_RELATIONSHIPS: str = "http://schemas.openxmlformats.org/package/2006/relationships"
+
+# Excel の日付シリアル値として妥当な範囲（1990-01-01 〜 2100-12-31 相当）
+_EXCEL_DATE_SERIAL_MIN: int = 32874
+_EXCEL_DATE_SERIAL_MAX: int = 73050
+_EXCEL_EPOCH: datetime = datetime(1899, 12, 30)
+
+# data_only=True でも解決されずにセルに残る Excel のエラー値
+_EXCEL_ERROR_VALUES: frozenset[str] = frozenset(
+    {
+        "#VALUE!",
+        "#REF!",
+        "#DIV/0!",
+        "#NAME?",
+        "#N/A",
+        "#NULL!",
+        "#NUM!",
+    }
+)
+
+# セル内の読点（全角カンマ）: 列区切りカンマとの混同を防ぐため半角カンマに先立って置換する
+_COMMA_REPLACEMENT: str = "、"
+
+
+# ==========================================
+# プライベート関数: セル値の正規化
+# ==========================================
+
+
+def _serial_to_date_string(serial_value: int) -> str | None:
+    """Excel の日付シリアル値を YYYY-MM-DD 文字列に変換する。
+
+    変換できない場合は None を返す。
+    """
+    try:
+        date_value = datetime.fromordinal(_EXCEL_EPOCH.toordinal() + serial_value)
+        return date_value.strftime("%Y-%m-%d")
+    except (ValueError, OverflowError):
+        return None
+
+
+def _normalize_cell_value(cell: Cell) -> str:
+    """セル値を文字列に正規化する。
+
+    - Excel エラー値 (#VALUE! 等): 空文字列に変換
+    - datetime 型: ISO 形式（YYYY-MM-DD）に変換
+    - 日付シリアル値と推定される数値: ISO 形式に変換
+    - セル内改行: 半角スペースに置換
+    - 桁区切りカンマ（数字,数字）: 除去
+    - 半角カンマ: 全角読点（、）に置換
+    - その他: str() で文字列化
+    """
+    value = cell.value
+
+    # Excel エラー値はノイズになるため除去する
+    if isinstance(value, str) and value.strip() in _EXCEL_ERROR_VALUES:
+        return ""
+
+    # openpyxl が datetime として返した場合
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d")
+
+    # data_only=True でもシリアル値（int/float）で返る場合への対処
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        int_value = int(value)
+        if _EXCEL_DATE_SERIAL_MIN <= int_value <= _EXCEL_DATE_SERIAL_MAX:
+            converted = _serial_to_date_string(int_value)
+            if converted is not None:
+                return converted
+
+    normalized: str = str(value).replace("\n", " ").strip()
+
+    # 桁区切りカンマを除去する（例: 9,200 → 9200）
+    # 全角読点への置換より先に処理することで、数値間のカンマのみを対象にできる
+    normalized = re.sub(r"(?<=\d),(?=\d)", "", normalized)
+
+    # 半角カンマを全角読点に置換する（列区切りカンマとの混同を防ぐ）
+    normalized = normalized.replace(",", _COMMA_REPLACEMENT)
+
+    return normalized
+
+
+# ==========================================
+# プライベート関数: 空行の圧縮
+# ==========================================
+
+
+def _collapse_blank_lines(lines: list[str]) -> list[str]:
+    """連続する空行を 1 行にまとめる。"""
+    collapsed: list[str] = []
+    previous_was_blank: bool = False
+
+    for line in lines:
+        is_blank: bool = line.strip() == ""
+        if is_blank and previous_was_blank:
+            continue
+        collapsed.append(line)
+        previous_was_blank = is_blank
+
+    return collapsed
+
+
+# ==========================================
+# プライベート関数: drawing → シート名 マッピング
+# ==========================================
+
+
+def _build_drawing_to_sheet_map(zip_file: zipfile.ZipFile) -> dict[str, str]:
+    """xl/workbook.xml.rels と xl/worksheets/_rels/ を辿り、drawing ファイルパス → シート名 のマッピングを返す。
+
+    解決手順:
+        1. xl/workbook.xml.rels から rId → sheet*.xml パスを取得
+        2. workbook.xml の r:id と照合してシートパス → シート名 を構築
+        3. xl/worksheets/_rels/sheet*.xml.rels から drawing パス → シート名 を構築
+    """
+    drawing_to_sheet: dict[str, str] = {}
+
+    ns_workbook: str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    ns_r_id: str = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+
+    # ── Step 1: workbook.xml を取得 ──────────────────────────────
+    workbook_path: str = "xl/workbook.xml"
+    if workbook_path not in zip_file.namelist():
+        return drawing_to_sheet
+
+    with zip_file.open(workbook_path) as workbook_file:
+        workbook_tree = etree.parse(workbook_file)
+
+    # ── Step 2: workbook.xml.rels から rId → sheet*.xml パスを取得 ──
+    workbook_rels_path: str = "xl/_rels/workbook.xml.rels"
+    if workbook_rels_path not in zip_file.namelist():
+        return drawing_to_sheet
+
+    with zip_file.open(workbook_rels_path) as rels_file:
+        rels_tree = etree.parse(rels_file)
+
+    rid_to_sheet_path: dict[str, str] = {}
+    for rel in rels_tree.findall(f"{{{_NS_RELATIONSHIPS}}}Relationship"):
+        rel_type: str = rel.get("Type", "")
+        if "worksheet" not in rel_type:
+            continue
+        rid: str | None = rel.get("Id")
+        target: str | None = rel.get("Target")
+        if rid and target:
+            # Target は "worksheets/sheet1.xml" のような相対パス
+            rid_to_sheet_path[rid] = f"xl/{target}"
+
+    # ── Step 3: workbook.xml の r:id と突合してシートパス → シート名 を構築 ──
+    sheet_path_to_name: dict[str, str] = {}
+    for sheet_element in workbook_tree.findall(f".//{{{ns_workbook}}}sheet"):
+        r_id: str | None = sheet_element.get(ns_r_id)
+        sheet_name: str | None = sheet_element.get("name")
+        if r_id and sheet_name and r_id in rid_to_sheet_path:
+            sheet_path: str = rid_to_sheet_path[r_id]
+            sheet_path_to_name[sheet_path] = sheet_name
+
+    # ── Step 4: sheet*.xml.rels から drawing パス → シート名 を構築 ──
+    for sheet_path, sheet_name in sheet_path_to_name.items():
+        # xl/worksheets/sheet1.xml → xl/worksheets/_rels/sheet1.xml.rels
+        sheet_filename: str = sheet_path.split("/")[-1]
+        sheet_rels_path: str = f"xl/worksheets/_rels/{sheet_filename}.rels"
+
+        if sheet_rels_path not in zip_file.namelist():
+            continue
+
+        with zip_file.open(sheet_rels_path) as sheet_rels_file:
+            sheet_rels_tree = etree.parse(sheet_rels_file)
+
+        for rel in sheet_rels_tree.findall(f"{{{_NS_RELATIONSHIPS}}}Relationship"):
+            rel_type = rel.get("Type", "")
+            if "drawing" not in rel_type:
+                continue
+            target = rel.get("Target")
+            if target:
+                # Target は "../drawings/drawing1.xml" のような相対パス
+                drawing_path: str = "xl/" + target.replace("../", "")
+                drawing_to_sheet[drawing_path] = sheet_name
+
+    return drawing_to_sheet
+
+
+# ==========================================
+# プライベート関数: セル・図形テキストの抽出
+# ==========================================
+
+
+def _extract_cell_lines(work_book: Workbook) -> list[str]:
+    """Openpyxl を使って全シートのセル値を行テキストのリストとして返す。
+
+    - MergedCell（結合セルの左上以外）はスキップする
+    - 各セルの値はカンマ区切りで結合し、列の独立性を示す
+    - 空行は空文字列として追加し、呼び出し元で連続空行の圧縮を行う
+
+    """
+    cell_lines: list[str] = []
+
+    for sheet in work_book.worksheets:
+        cell_lines.append(f"\n=== シート: {sheet.title} ===\n")
+
+        for row in sheet.iter_rows():
+            cell_texts: list[str] = []
+
+            for cell in row:
+                if isinstance(cell, MergedCell):
+                    # 結合セルの左上以外はスキップ（値は左上セルに集約されている）
+                    continue
+                if cell.value is None:
+                    continue
+
+                normalized_value: str = _normalize_cell_value(cell)
+                if normalized_value:
+                    cell_texts.append(normalized_value)
+
+            # セルをカンマ区切りで結合し、列の独立性をLLMに示す
+            row_text: str = ", ".join(cell_texts)
+            # 空行も追加する（連続空行の圧縮は _collapse_blank_lines で行う）
+            cell_lines.append(row_text)
+
+    return cell_lines
+
+
+def _extract_shape_lines(
+    file_stream: io.BytesIO,
+    drawing_to_sheet: dict[str, str],
+) -> list[str]:
+    """Lxml を使って xlsx 内の図形・テキストボックスのテキストを返す。
+
+    - drawing_to_sheet マップを使い、各図形テキストにシート名を付与する
+    - 図形テキストが 1 件も存在しないシートのヘッダーは出力しない
+    """
+    shape_lines: list[str] = []
+    current_sheet_name: str = ""
+
+    with zipfile.ZipFile(file_stream) as zip_file:
+        drawing_entry_names: list[str] = sorted(
+            [entry_name for entry_name in zip_file.namelist() if re.search(r"xl/drawings/drawing\d+\.xml$", entry_name)]
         )
 
-    # 拡張子バリデーション
-    extension = Path(request.file.filename).suffix.lower()  # 拡張子を取得 (全て小文字に変換)
-    if extension not in ALLOWED_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"サポートされていないファイル形式です ({extension})。PDF, DOCX, XLSXのみ対応しています。",
-        )
+        for drawing_entry_name in drawing_entry_names:
+            sheet_name: str = drawing_to_sheet.get(drawing_entry_name, "不明")
 
-    # --- 抽出処理の実行 ---
-    extracted_text = await deep_service.extract_markdown_with_docling(upload_file=request.file, extension=extension)
+            with zip_file.open(drawing_entry_name) as drawing_file:
+                drawing_tree = etree.parse(drawing_file)
 
-    # --- レスポンス構築 ---
-    response_data = ExtractTextResponse(
-        status="success",
-        filename=request.file.filename,
-        file_type=extension.replace(".", ""),  # ".pdf" -> "pdf"
-        extracted_text=extracted_text,
-        char_count=len(extracted_text),
-    )
+            shape_elements = drawing_tree.findall(f".//{{{_NS_SPREADSHEET_DRAWING}}}sp")
 
-    return response_data
+            # このdrawingファイルから抽出できる図形テキストを先に収集する
+            # テキストが存在しない場合はシートヘッダーごと出力しない
+            texts_in_drawing: list[str] = []
+            for shape_element in shape_elements:
+                text_run_elements = shape_element.findall(f".//{{{_NS_DRAWING_MAIN}}}t")
+                shape_text: str = "".join(text_run.text or "" for text_run in text_run_elements).strip()
+                if shape_text:
+                    texts_in_drawing.append(shape_text)
+
+            if not texts_in_drawing:
+                # 図形テキストなし: このdrawingはスキップ（ヘッダーも出力しない）
+                continue
+
+            # シートが切り替わったらヘッダーを挿入
+            if sheet_name != current_sheet_name:
+                if shape_lines:
+                    shape_lines.append("")
+                shape_lines.append(f"\n=== シート: {sheet_name} ===\n")
+                current_sheet_name = sheet_name
+
+            shape_lines.extend(texts_in_drawing)
+
+    return shape_lines
+
+
+# ==========================================
+# パブリック関数
+# ==========================================
+
+
+def extract_from_xlsx(file_stream: io.BytesIO) -> str:
+    """Excel ファイルからテキストを抽出する。
+
+    Args:
+        file_stream: xlsx ファイルの BytesIO ストリーム
+
+    Returns:
+        抽出されたテキスト全体を改行区切りで結合した文字列
+
+    """
+    file_stream.seek(0)
+    work_book: Workbook = load_workbook(file_stream, data_only=True)
+    cell_lines: list[str] = _extract_cell_lines(work_book)
+
+    # drawing → シート名 のマッピングを構築
+    file_stream.seek(0)
+    with zipfile.ZipFile(file_stream) as zip_file:
+        drawing_to_sheet: dict[str, str] = _build_drawing_to_sheet_map(zip_file)
+
+    file_stream.seek(0)
+    shape_lines: list[str] = _extract_shape_lines(file_stream, drawing_to_sheet)
+
+    all_lines: list[str] = []
+
+    if cell_lines:
+        all_lines.append("\n== セル内のテキスト ==\n")
+        all_lines.extend(cell_lines)
+
+    if shape_lines:
+        if all_lines:
+            all_lines.append("")
+        all_lines.append("\n== 図形やテキストボックス内のテキスト ==\n")
+        all_lines.extend(shape_lines)
+
+    collapsed_lines: list[str] = _collapse_blank_lines(all_lines)
+    result_text: str = "\n".join(collapsed_lines)
+    result_text = re.sub(r"\n{3,}", "\n\n", result_text).strip()
+    result_prefix = "以下の内容は、XLSX形式のファイルから機械的にテキストを抽出したものです。\n\n"
+    return result_prefix + result_text
 </file>
 
-<file path="src/api/mode/standard/__標準抽出モード__">
-
-</file>
-
-<file path="src/api/mode/__抽出モード別の処理実装__">
-
-</file>
-
-<file path="src/api/shared_modules/schemas/extract_schema.py">
-# src/api/shared_modules/schemas/extract_schema.py
+<file path="src/api/schemas/extract_schema.py">
+# src/api/schemas/extract_schema.py
 
 """テキスト抽出APIで使用するスキーマ定義
 
@@ -326,20 +1100,21 @@ async def extract_deep(
 """
 
 from dataclasses import dataclass
+from typing import Literal
 
-from fastapi import File, UploadFile
+from fastapi import File, Query, UploadFile
 from pydantic import BaseModel, Field
 
 # ==========================================
 # リクエストの型
 # ==========================================
 
-
 @dataclass
 class ExtractTextRequest:
     """テキスト抽出APIのリクエストパラメータ"""
 
     file: UploadFile = File(..., description="抽出対象のファイル (PDF, DOCX, XLSX)")
+    mode: Literal["standard", "deep"] = Query(default="standard",  description="抽出オプション(PDFのみ高精度抽出が可能)")
 
 
 # ==========================================
@@ -357,8 +1132,184 @@ class ExtractTextResponse(BaseModel):
     char_count: int = Field(..., description="抽出された文字数")
 </file>
 
-<file path="src/api/shared_modules/__共有モジュール__">
+<file path="src/api/services/extract_service.py">
+# src/api/domains/extract/services/extract_service.py
 
+"""テキスト抽出APIのサービスクラス
+
+PDF, DOCX, XLSXファイルからメモリ上でテキストを抽出するロジックを提供します。
+"""
+
+# 型チェック時以外は型ヒントを文字列として認識させる
+from __future__ import annotations
+
+import io
+from typing import TYPE_CHECKING
+
+# ファイル形式別テキスト抽出処理モジュール
+from ..extractors.docx_extractor import extract_from_docx
+from ..extractors.image_extractor import extract_from_image
+from ..extractors.pdf_extractor import extract_from_pdf
+from ..extractors.pdf_extractor_docling import extract_from_pdf_with_docling
+from ..extractors.pptx_extractor import extract_from_pptx
+from ..extractors.text_extractor import extract_from_text
+from ..extractors.xlsx_extractor import extract_from_xlsx
+
+# 型チェック時のみインポートするブロック
+if TYPE_CHECKING:
+    from typing import Literal
+
+    from fastapi import UploadFile
+
+
+def extract_text_from_file(file: UploadFile, extension: str, mode: Literal["standard", "deep"]) -> str:
+    """アップロードされたファイルからテキストを抽出する
+
+    Args:
+        file (UploadFile): FastAPIから受け取ったアップロードファイルオブジェクト
+        extension (str): 小文字化された拡張子 (例: '.pdf')
+        mode (Literal["standard", "deep"]): 抽出モード
+
+    Returns:
+        str: 抽出されたテキスト
+
+    """
+    if not file.filename:
+        # router層でバリデーションしているが、万が一ここに到達したら500を返す
+        raise ValueError("ファイル名が取得できませんでした。有効なファイルをアップロードしてください。")
+
+    # ファイルをメモリ上に読み込む
+    content = file.file.read()
+    file_stream = io.BytesIO(content)
+
+    extracted_text = ""
+
+    # --- 各ファイル形式の処理 ---
+    if extension == ".docx":
+        extracted_text = extract_from_docx(file_stream)
+    elif extension == ".xlsx":
+        extracted_text = extract_from_xlsx(file_stream)
+    elif extension == ".pptx":
+        extracted_text = extract_from_pptx(file_stream)
+    elif extension == ".pdf" and mode == "standard":
+        extracted_text = extract_from_pdf(file_stream)
+    elif extension == ".pdf" and mode == "deep":
+        extracted_text = extract_from_pdf_with_docling(file_stream)
+    elif extension in {".txt", ".md"}:
+        extracted_text = extract_from_text(content)
+    elif extension in {".png", ".jpg", ".jpeg"}:
+        extracted_text = extract_from_image(content)
+    else:
+        raise ValueError(f"サポートされていないファイル形式です: {file.filename}")
+    if extracted_text is None:
+        raise ValueError(f"抽出されたデータが存在しません: {file.filename}")
+
+    return extracted_text.strip()
+</file>
+
+<file path="src/api/utils/text_cleaner.py">
+# src/api/utils/text_cleaner.py
+
+"""テキスト整形モジュール"""
+
+import unicodedata
+
+
+def normalize_text(text: str) -> str:
+    """テキストを正規化する"""
+    text = unicodedata.normalize("NFKC", text)
+    return text
+
+
+def clean_markdown(text: str) -> str:
+    """抽出されたMarkdownテキストを、LLMやフロントエンドが解釈しやすい形に正規化する
+
+    Args:
+        text (str): Doclingから出力された生のMarkdownテキスト
+
+    Returns:
+        str: 正規化されたMarkdownテキスト
+
+    """
+    return text
+</file>
+
+<file path="src/api/extract_router.py">
+# src/api/domains/extract/extract_router.py
+
+"""テキスト抽出APIのエンドポイント定義
+
+ユーザーがアップロードしたドキュメントファイルからテキストを抽出して返却します。
+"""
+
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException
+
+# スキーマ
+from .schemas.extract_schema import ExtractTextRequest, ExtractTextResponse
+
+# サービスロジック
+from .services import extract_service
+
+router = APIRouter(prefix="/extract", tags=["テキスト抽出"])
+
+# 許可する拡張子の定義
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".pptx", ".txt", ".md", ".png", ".jpg", ".jpeg"}
+
+
+@router.post(
+    path="/text",
+    response_model=ExtractTextResponse,
+    summary="ファイルからテキストを抽出するAPI",
+)
+async def extract_text(
+    request: ExtractTextRequest = Depends(),
+) -> ExtractTextResponse:
+    """## アップロードされたドキュメント・画像からテキストを抽出します。
+
+    ### 仕様
+    - **一時保存なし**: サーバー側のストレージには保存せず、メモリ上で処理して破棄します。
+    - **対応形式**: `.pdf`, `.docx`, `.xlsx`, `.pptx`, `.txt`, `.md`, `.png`, `.jpg`, `.jpeg`
+    - **抽出範囲**:
+        - PDF: 全ページのテキスト（テキストレイヤーがあるもののみ）
+        - Word: 本文・表・ヘッダー・フッター・図形内テキスト（テキストボックス、DrawingML図形）
+        - Excel: 全シートのセルデータ（数式ではなく計算後の値）
+        - PowerPoint: 全スライドのテキスト、グループ化図形内テキスト、表、スライドノート
+        - 画像: VLM(視覚言語モデル)を用いて、写真やスキャンデータから視覚的にテキストを抽出
+
+    ### 注意点・限界
+    - Excel: Markdown形式の表出力には対応していません。多様な形式に対応するため、CSVライクなカンマ区切りを採用しています。
+    - PDF: スキャンされた画像形式のPDF（文字が画像になっているもの）からの抽出には、現時点では対応していません。
+    - 画像: ローカルAIモデル(Ollama)を使用するため、処理に数秒〜十数秒程度かかる場合があります。
+    """
+    # --- 想定内の例外処理 (想定外はグローバル例外ハンドラに投げる) ---
+    # ファイル名の存在チェック
+    if not request.file.filename:
+        raise HTTPException(
+            status_code=400, detail="ファイル名が取得できません。適切な拡張子を持つファイルをアップロードしてください。"
+        )
+    # 拡張子のバリデーション
+    extension = Path(request.file.filename).suffix.lower()  # 拡張子を取得 (全て小文字に変換)
+    if extension not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"サポートされていないファイル形式です ({extension})。対応しているファイル形式:PDF, DOCX, XLSX, TXT, MD, PNG, JPG",
+        )
+
+    # --- テキスト抽出処理実行 ---
+    text = extract_service.extract_text_from_file(request.file, extension, mode=request.mode)
+
+    # --- レスポンス構築 ---
+    response_json = ExtractTextResponse(
+        status="success",
+        filename=request.file.filename,
+        file_type=extension.replace(".", ""),  # ".pdf" -> "pdf"
+        extracted_text=text,
+        char_count=len(text),
+    )
+
+    return response_json
 </file>
 
 <file path="src/core/__環境変数等__">
@@ -382,8 +1333,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # .env から直接読み取る値
-    PORT: str = Field(..., description="ポート番号", examples=["8001"])
+    SELF_PORT: str = Field(..., description="ポート番号", examples=["8001"])
     ACCESS_ALLOW_URL: str = Field(..., description="通信を許可するURL", examples=["http://localhost:8000"])
+    OLLAMA_URL: str = Field(..., description="Ollamaの接続URL")
 
     # None許容の値
     HF_TOKEN: str | None = Field(None, description="HuggingFaceのアクセストークン(モデルダウンロード用)")
@@ -410,9 +1362,17 @@ Doclingのコンバーターなど、起動時に初期化し、
 アプリケーション全体で共有する重いオブジェクトを管理します。
 """
 
+import logging
+
+from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
 from docling.datamodel.base_models import InputFormat
-from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.datamodel.pipeline_options import CodeFormulaVlmOptions, PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
+
+# 処理デバイス
+from src.core.config import device
+
+logger = logging.getLogger(__name__)
 
 
 class ModelState:
@@ -426,14 +1386,53 @@ class ModelState:
         """Doclingのコンバーターを最適なオプションで初期化する"""
         pipeline_options = PdfPipelineOptions()
 
-        # --- パイプラインオプションの設定 ---
-        pipeline_options.do_ocr = True  # OCR（光学的文字認識）機能を有効
+        # 基本機能の設定
+        pipeline_options.do_ocr = True  # OCRの有効化
+        pipeline_options.images_scale = 2.0  # OCR処理の前に抽出した画像の解像度を引き上げる(2倍)
+        pipeline_options.do_table_structure = True  # テーブル解析の有効化
+        pipeline_options.do_formula_enrichment = True  # 数式解析の有効化
 
-        pipeline_options.do_table_structure = True  # 表構造解析を有効化
-        pipeline_options.do_formula_enrichment = True  # 数式解析を有効化
+        # --- 1. アクセラレータの動的設定 ---
+        device_str = str(device).upper()  # 大文字に変換
+        pipeline_options.accelerator_options = AcceleratorOptions(
+            device=AcceleratorDevice[device_str],  # "MPS", "CUDA", "CPU" のいずれかが設定される
+        )
+
+        # --- 2. デバイス(MPS)に応じたエンジン最適化 ---
+        if device_str == "MPS":
+            try:
+                # 実行時インポートで、Mac以外の環境での ImportError を防ぐ
+                from docling.datamodel.vlm_engine_options import MlxVlmEngineOptions
+
+                formula_options = CodeFormulaVlmOptions.from_preset("codeformulav2")
+                formula_options.engine_options = MlxVlmEngineOptions()
+                pipeline_options.code_formula_options = formula_options
+
+                logger.info("Apple Silicon(MPS)向けのMLXエンジン最適化を適用しました。")
+            except ImportError:
+                logger.warning("MLX関連のライブラリが見つかりません。デフォルトのエンジンにフォールバックします。")
+        else:
+            # CUDA や CPU の場合は、Docling標準の自動判定（Transformers等）に任せる...(必要に応じて追加実装)
+            logger.info(f"{device_str}向けのデフォルトエンジン（Transformers等）を使用します。")
+
+        # --- 3. コンバーターの初期化 ---
+        # サポートする形式をリストで指定
+        allowed_formats = [
+            InputFormat.PDF,
+            InputFormat.DOCX,
+            InputFormat.XLSX,
+            InputFormat.PPTX,
+            InputFormat.HTML,
+            InputFormat.MD,
+            InputFormat.CSV,
+        ]
 
         self.converter = DocumentConverter(
-            format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
+            allowed_formats=allowed_formats,
+            format_options={
+                # PDFの時だけ、これまで設定した重いパイプライン（OCRやMLXエンジン）を適用
+                InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+            },
         )
 
 
@@ -455,7 +1454,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 # ルーター
-from src.api.mode.deep import deep_router
+from src.api import extract_router
 
 # 環境変数・状態管理
 from src.core.config import device, settings
@@ -572,8 +1571,7 @@ app.add_middleware(
 # ルーター登録
 # ==========================================
 
-app.include_router(deep_router.router)  # 高精度テキスト抽出API
-# app.include_router(standard_router.router)  # 軽量テキスト抽出API
+app.include_router(extract_router.router)  # テキスト抽出API
 
 
 # ==========================================
@@ -612,7 +1610,7 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 @app.get("/", tags=["動作確認"])
 def read_root() -> dict:
     """ルートページ"""
-    return {"document": f"http://localhost:{settings.PORT}/docs"}
+    return {"document": f"http://localhost:{settings.SELF_PORT}/docs"}
 </file>
 
 <file path=".env.example">
@@ -623,6 +1621,9 @@ ACCESS_ALLOW_URL=http://localhost:8000
 
 # HuggingFace
 HF_TOKEN=your-token-here
+
+# Ollama
+OLLAMA_URL=http://localhost:11434
 </file>
 
 <file path=".python-version">
@@ -645,7 +1646,7 @@ export
 
 # FastAPIサーバー起動 (uvicorn)
 run:
-	uv run uvicorn src.main:app --host 0.0.0.0 --port ${PORT} --reload
+	uv run uvicorn src.main:app --host 0.0.0.0 --port ${SELF_PORT} --reload
 
 # ==========================================
 # Ruff操作
@@ -676,7 +1677,7 @@ help:
 	@echo "使用可能なコマンド一覧:"
 	@echo ""
 	@echo "  [Uvicorn] サーバー起動"
-	@echo "  make run            FastAPIサーバー起動 (ポート番号: ${PORT})"
+	@echo "  make run            FastAPIサーバー起動 (ポート番号: ${SELF_PORT})"
 	@echo ""
 	@echo "  [Ruff] 静的解析・フォーマット"
 	@echo "  make format         コードの自動フォーマット実行"
@@ -696,8 +1697,21 @@ requires-python = ">=3.14"
 dependencies = [
     "docling>=2.92.0",
     "fastapi[standard]>=0.136.1",
+    "pypdfium2>=5.7.1",
+    "openpyxl>=3.1.5",
+    "lxml>=6.1.0",
+    "types-lxml>=2026.2.16",
+    "python-pptx>=1.0.2",
+    "python-docx>=1.2.0",
+    "ollama>=0.6.2",
+    "pillow>=12.2.0",
     "torch>=2.11.0",
     "torchvision>=0.26.0",
+    # --- Mac (Apple Silicon) 環境専用の依存関係 ---
+    "ocrmac>=1.0.1; sys_platform == 'darwin'",
+    "mlx>=0.31.2; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "mlx-lm>=0.31.3; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "mlx-vlm>=0.4.4; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 
 [dependency-groups]
@@ -784,20 +1798,14 @@ disable_test_id_escaping_and_forfeit_all_rights_to_community_support = true
 
 アップロードされた文書ファイルからテキストを抽出する処理を提供します。
 
-## PyTorch で MPS を利用するために必要なライブラリ
-
-`PyTorch` の他に、 `torchvision` もセットでインストールしておく
-
-- `torch`: 多次元配列の計算
-- `torchvision`: 画像データの読み込み
-
 ## 参考リンク
 
-* [Docling](https://www.docling.ai)
-* [Docling GitHub](https://github.com/docling-project/docling)
+- [Docling](https://www.docling.ai)
+- [Docling GitHub](https://github.com/docling-project/docling)
 
-## ディレクトリ構造 (Project-Treeによる自動出力)
+## ディレクトリ構造
 
+`Project-Tree`による自動出力:
 
 ```
 Document-Extraction-Service
@@ -807,13 +1815,11 @@ Document-Extraction-Service
 ├─ data
 │  ├─ __検証用のサンプルデータ配置__
 │  ├─ sample_docx_data
-│  │  └─ __DOCX形式のサンプル__
+│  ├─ sample_img_data
 │  ├─ sample_patent_pdf_data
-│  │  └─ __特許公報PDFのサンプル__
 │  ├─ sample_pdf_data
-│  │  └─ __PDF形式のサンプル__
+│  ├─ sample_pptx_data
 │  └─ sample_xlsx_data
-│     └─ __XLSX形式のサンプル__
 ├─ notebooks
 │  ├─ 01_テキスト抽出テスト.ipynb
 │  └─ __開発検証用ノートブック__
@@ -821,21 +1827,21 @@ Document-Extraction-Service
 ├─ repomix.config.json
 ├─ src
 │  ├─ api
-│  │  ├─ mode
-│  │  │  ├─ __抽出モード別の処理実装__
-│  │  │  ├─ deep
-│  │  │  │  ├─ __高精度抽出モード__
-│  │  │  │  ├─ deep_router.py
-│  │  │  │  ├─ services
-│  │  │  │  │  └─ deep_service.py
-│  │  │  │  └─ utils
-│  │  │  │     └─ markdown_cleaner.py
-│  │  │  └─ standard
-│  │  │     └─ __標準抽出モード__
-│  │  └─ shared_modules
-│  │     ├─ __共有モジュール__
-│  │     └─ schemas
-│  │        └─ extract_schema.py
+│  │  ├─ extract_router.py
+│  │  ├─ extractors
+│  │  │  ├─ docx_extractor.py
+│  │  │  ├─ image_extractor.py
+│  │  │  ├─ pdf_extractor.py
+│  │  │  ├─ pdf_extractor_docling.py
+│  │  │  ├─ pptx_extractor.py
+│  │  │  ├─ text_extractor.py
+│  │  │  └─ xlsx_extractor.py
+│  │  ├─ schemas
+│  │  │  └─ extract_schema.py
+│  │  ├─ services
+│  │  │  └─ extract_service.py
+│  │  └─ utils
+│  │     └─ text_cleaner.py
 │  ├─ core
 │  │  ├─ __環境変数等__
 │  │  ├─ config.py
