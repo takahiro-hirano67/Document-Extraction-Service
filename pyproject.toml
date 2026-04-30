@@ -1,0 +1,99 @@
+[project]
+name = "document-extraction-service"
+version = "0.1.0"
+description = "アップロードされた文書からテキストを抽出する処理を提供します。"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "docling>=2.92.0",
+    "fastapi[standard]>=0.136.1",
+    "pypdfium2>=5.7.1",
+    "ollama>=0.6.2",
+    "pillow>=12.2.0",
+    "torch>=2.11.0",
+    "torchvision>=0.26.0",
+    # --- Mac (Apple Silicon) 環境専用の依存関係 ---
+    "ocrmac>=1.0.1; sys_platform == 'darwin'",
+    "mlx>=0.31.2; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "mlx-lm>=0.31.3; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "mlx-vlm>=0.4.4; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.2.0",
+    "jupyter>=1.1.1",
+    "pytest>=9.0.3",
+    "ruff>=0.15.12",
+]
+
+# --- Ruff全体の設定 ---
+[tool.ruff]
+# 対象のPythonバージョン
+target-version = "py313"
+# 1行の最大文字数
+line-length = 120
+
+# 除外するディレクトリ
+exclude = [
+    ".venv",
+    ".git",
+    "__pycache__",
+    "build",
+    "dist",
+    "notebooks",
+]
+
+# --- Ruffのルールに関する設定 ---
+[tool.ruff.lint]
+# 有効にするルール
+select = [
+    "F",   # Pyflakes (未定義・未使用の変数やインポート)
+    "E",   # pycodestyle Error (スタイルガイド(PEP8)に沿っているか)
+    "W",   # pycodestyle Warning (スタイルガイド(PEP8)に沿っているか)
+    "I",   # isort (import順序の最適化)
+    "N",   # pep8-naming (関数や変数の命名がスタイルガイド(PEP8)に従っているか)
+    "D",   # pydocstyle (ドキュメンテーション文字列(Docstring)に関するルール)
+    "UP",  # pyupgrade (新しいPython記法への自動アップデート)
+    "B",   # flake8-bugbear (バグになりやすい問題や設計上の問題を検出)
+    "S",   # flake8-bandit (evalなどの安全ではないコードを検出)
+    "SIM", # flake8-simplify (コードをシンプルにできる箇所の指摘 | ネストされたif文など)
+    "ANN", # flake8-annotations (型ヒントに関するルール)
+    "TCH",  # flake8-type-checking (型チェック用インポートの最適化)
+]
+
+# 無視するルール
+ignore = [
+    "E501", # 1行あたりの行の長さのルール (Formatterに任せるためLintでは無視)
+    "B008", # デフォルト引数で関数呼び出しをしないルール (FastAPIのQuery()と競合するため無効)
+    "D203", # クラス定義の前に空行を入れるルール (D211(クラス定義の前に空行を入れてはいけないルール)と競合するため無効)
+    "D213", # Docstringの要約行の位置を2行目にするルール (D212(要約行の位置を1行目にするルール)と競合するため無効)
+    "D400", # Docstringの1行目にピリオドを付けるルール (日本語の文章と競合するため無効)
+    "D415", # Docstringの1行目の末尾に符号を付けるルール（日本語の文章と競合するため無効）
+]
+
+# --- 特定のファイルだけルールを無視する設定 ---
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"] # __init__.py では「未使用のimport」を許可する
+"src/tests/**/**/*.py" = ["S101", "ANN"] # テストコードでは assert の使用を許可する (banditルールのS101)
+
+# --- Ruffによるフォーマットの設定 ---
+[tool.ruff.format]
+# ダブルクォーテーションに統一
+quote-style = "double"
+# インデントはスペース
+indent-style = "space"
+
+# --- pytestの設定 ---
+[tool.pytest.ini_options]
+# テスト実行時にプロジェクトルートをモジュール検索パス(sys.path)に追加する
+# テストコード内から絶対パスインポートが可能になる
+pythonpath = ["."]
+
+# pytestがデフォルトでテストを認識するディレクトリを指定
+testpaths = ["src/tests"]
+
+# テストID（parametrize等で指定する文字列）のUnicodeエスケープを無効化する
+# テスト結果出力時の日本語が文字化けして表示されるのを防ぐ
+disable_test_id_escaping_and_forfeit_all_rights_to_community_support = true
+

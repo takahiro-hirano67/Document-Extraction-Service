@@ -1,0 +1,850 @@
+This file is a merged representation of a subset of the codebase, containing files not matching ignore patterns, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of a subset of the repository's contents that is considered the most important context.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+- Pay special attention to the Repository Description. These contain important context and guidelines specific to this project.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching these patterns are excluded: **.xml, **.csv, **.pdf, **.ipynb, **.gitkeep, .gitignore, repomix.config.json
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+</notes>
+
+</file_summary>
+
+<user_provided_header>
+Document-Extraction-Service
+</user_provided_header>
+
+<directory_structure>
+data/
+  sample_docx_data/
+    __DOCX形式のサンプル__
+  sample_patent_pdf_data/
+    __特許公報PDFのサンプル__
+  sample_pdf_data/
+    __PDF形式のサンプル__
+  sample_xlsx_data/
+    __XLSX形式のサンプル__
+  __検証用のサンプルデータ配置__
+notebooks/
+  __開発検証用ノートブック__
+src/
+  api/
+    mode/
+      deep/
+        services/
+          deep_service.py
+        utils/
+          markdown_cleaner.py
+        __高精度抽出モード__
+        deep_router.py
+      standard/
+        __標準抽出モード__
+      __抽出モード別の処理実装__
+    shared_modules/
+      schemas/
+        extract_schema.py
+      __共有モジュール__
+  core/
+    __環境変数等__
+    config.py
+    model_state.py
+  main.py
+.env.example
+.python-version
+Makefile
+pyproject.toml
+README.md
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="data/sample_docx_data/__DOCX形式のサンプル__">
+
+</file>
+
+<file path="data/sample_patent_pdf_data/__特許公報PDFのサンプル__">
+
+</file>
+
+<file path="data/sample_pdf_data/__PDF形式のサンプル__">
+
+</file>
+
+<file path="data/sample_xlsx_data/__XLSX形式のサンプル__">
+
+</file>
+
+<file path="data/__検証用のサンプルデータ配置__">
+
+</file>
+
+<file path="notebooks/__開発検証用ノートブック__">
+
+</file>
+
+<file path="src/api/mode/deep/services/deep_service.py">
+# src/api/mode/deep/services/deep_service.py
+
+"""高精度テキスト抽出のサービスクラス
+
+Doclingを利用してPDFファイルからテキスト（Markdown）を抽出します。
+インメモリでのストリーム処理およびMarkdownの整形を行います。
+"""
+
+import asyncio
+import io
+
+from docling_core.types.io import DocumentStream
+from fastapi import UploadFile
+
+from src.core.model_state import model_state
+
+# 補助処理
+from ..utils.markdown_cleaner import clean_markdown
+
+
+async def extract_markdown_with_docling(upload_file: UploadFile, extension: str) -> str:
+    """アップロードされたファイルからDoclingを用いてMarkdownを抽出する
+
+    Args:
+        upload_file (UploadFile): FastAPIから受け取ったアップロードファイルオブジェクト
+        extension (str): 小文字化された拡張子 (例: '.pdf')
+
+    Returns:
+        str: 抽出・構造化された正規化済みMarkdownテキスト
+
+    Raises:
+        RuntimeError: Doclingのコンバーターが初期化されていない場合
+
+    """
+    if model_state.converter is None:
+        raise RuntimeError("Docling converter is not initialized.")
+
+    # --- 1. ファイルをメモリ(BytesIO)に読み込む ---
+    await upload_file.seek(0)
+    file_content = await upload_file.read()
+    pdf_stream = io.BytesIO(file_content)
+
+    # --- 2. DoclingのDocumentStreamオブジェクトを生成 ---
+    # ファイル名が存在しない場合はフォールバックとして "例: input.pdf" を設定
+    safe_filename = upload_file.filename if upload_file.filename else f"input{extension}"
+    doc_stream = DocumentStream(name=safe_filename, stream=pdf_stream)
+
+    # --- 3. Doclingによる抽出処理 ---
+    # convert()は同期処理で重いため、イベントループをブロックしないよう別スレッドで実行する
+    conversion_result = await asyncio.to_thread(
+        model_state.converter.convert,
+        doc_stream,
+    )
+
+    # --- 4. Markdown形式での出力 ---
+    raw_markdown = conversion_result.document.export_to_markdown()
+
+    # --- 5. Markdown出力の整形 ---
+    cleaned_markdown = clean_markdown(raw_markdown)
+
+    return cleaned_markdown.strip()
+</file>
+
+<file path="src/api/mode/deep/utils/markdown_cleaner.py">
+# src/api/mode/deep/utils/markdown_cleaner.py
+
+"""テキスト整形モジュール"""
+
+import re
+
+
+def clean_markdown(content: str) -> str:
+    """抽出されたMarkdownテキストを、LLMやフロントエンドが解釈しやすい形に正規化する
+
+    Args:
+        content (str): Doclingから出力された生のMarkdownテキスト
+
+    Returns:
+        str: 正規化されたMarkdownテキスト
+
+    """
+    if not content:
+        return ""
+
+    processed_content = content
+
+    # 1. 数式デリミタの正規化
+    # Doclingが出力する \[ ... \] や \( ... \) を $$...$$ や $...$ に変換
+    processed_content = re.sub(r"\\\[([\s\S]*?)\\\]", r"$$\1$$", processed_content)
+    processed_content = re.sub(r"\\\(([\s\S]*?)\\\)", r"$\1$", processed_content)
+
+    # 2. KaTeX Aligned Fix (数式の描画エラー防止)
+    # 数式内に '&' (整列) があり、かつ環境指定(\begin)がない場合、自動的に aligned 環境で囲む
+    def align_replacer(match: re.Match) -> str:
+        equation = match.group(1)
+        # 既に環境指定(\begin)がある場合は何もしない
+        if "\\begin" in equation:
+            return match.group(0)
+
+        # '&' (整列タブ) が含まれている場合、補正対象とする
+        if "&" in equation:
+            return f"$$\n\\begin{{aligned}}\n{equation}\n\\end{{aligned}}\n$$"
+
+        return match.group(0)
+
+    processed_content = re.sub(r"\$\$([\s\S]*?)\$\$", align_replacer, processed_content)
+
+    # 3. コードブロックの正規化
+    # コードブロックの ``` の直前に改行がないと正しくパースされない場合への対処
+    processed_content = re.sub(r"([^\n])```", r"\1\n```", processed_content)
+
+    return processed_content
+</file>
+
+<file path="src/api/mode/deep/__高精度抽出モード__">
+
+</file>
+
+<file path="src/api/mode/deep/deep_router.py">
+# src/api/mode/deep/deep_router.py
+
+"""高精度テキスト抽出APIのエンドポイント定義
+
+DoclingとMPS(GPU)を活用し、テーブル構造などを保持したままテキストを抽出します。
+"""
+
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException
+
+# スキーマ
+from src.api.shared_modules.schemas.extract_schema import ExtractTextRequest, ExtractTextResponse
+
+# サービスロジック
+from .services import deep_service
+
+router = APIRouter(prefix="/extract", tags=["テキスト抽出"])
+
+# 許可する拡張子の定義 (Doclingは現在主にPDFに特化)
+ALLOWED_EXTENSIONS = {".pdf"}
+
+
+@router.post(
+    path="/deep",
+    response_model=ExtractTextResponse,
+    response_model_exclude_none=True,
+    summary="【高精度】PDFからMarkdown形式でテキストを抽出するAPI",
+)
+async def extract_deep(
+    request: ExtractTextRequest = Depends(),
+) -> ExtractTextResponse:
+    """## 高精度テキスト抽出API (Docling稼働)
+
+    アップロードされたPDFから、Doclingエンジン（MPS/GPU対応）を利用してテキストを抽出します。
+    特許公報等の複雑なレイアウトやテーブル構造を維持したまま、Markdown形式で出力します。
+
+    ### 仕様
+    - **処理時間**: 数秒〜数十秒かかる場合があります。
+    - **対応形式**: `.pdf`
+    - **一時保存**: 処理のためにサーバー内で一時ファイルとして保存されますが、レスポンス返却直後に破棄されます。
+
+    ### 注意点
+    - パフォーマンスを優先するため、ファイルサイズが極端に大きい場合はタイムアウトになる可能性があります。
+    """
+    # --- 想定内の例外処理 (想定外はグローバル例外ハンドラに投げる) ---
+    # ファイル存在チェック
+    if not request.file.filename:
+        raise HTTPException(
+            status_code=400,
+            detail="ファイル名が取得できません。適切な拡張子を持つファイルをアップロードしてください。",
+        )
+
+    # 拡張子バリデーション
+    extension = Path(request.file.filename).suffix.lower()  # 拡張子を取得 (全て小文字に変換)
+    if extension not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"サポートされていないファイル形式です ({extension})。PDF, DOCX, XLSXのみ対応しています。",
+        )
+
+    # --- 抽出処理の実行 ---
+    extracted_text = await deep_service.extract_markdown_with_docling(upload_file=request.file, extension=extension)
+
+    # --- レスポンス構築 ---
+    response_data = ExtractTextResponse(
+        status="success",
+        filename=request.file.filename,
+        file_type=extension.replace(".", ""),  # ".pdf" -> "pdf"
+        extracted_text=extracted_text,
+        char_count=len(extracted_text),
+    )
+
+    return response_data
+</file>
+
+<file path="src/api/mode/standard/__標準抽出モード__">
+
+</file>
+
+<file path="src/api/mode/__抽出モード別の処理実装__">
+
+</file>
+
+<file path="src/api/shared_modules/schemas/extract_schema.py">
+# src/api/shared_modules/schemas/extract_schema.py
+
+"""テキスト抽出APIで使用するスキーマ定義
+
+アップロードされたファイルからの抽出結果を定義します。
+"""
+
+from dataclasses import dataclass
+
+from fastapi import File, UploadFile
+from pydantic import BaseModel, Field
+
+# ==========================================
+# リクエストの型
+# ==========================================
+
+
+@dataclass
+class ExtractTextRequest:
+    """テキスト抽出APIのリクエストパラメータ"""
+
+    file: UploadFile = File(..., description="抽出対象のファイル (PDF, DOCX, XLSX)")
+
+
+# ==========================================
+# レスポンスの型
+# ==========================================
+
+
+class ExtractTextResponse(BaseModel):
+    """テキスト抽出APIのレスポンス"""
+
+    status: str = Field("success", description="ステータス", examples=["success"])
+    filename: str = Field(..., description="アップロードされたファイル名", examples=["document.pdf"])
+    file_type: str = Field(..., description="判定されたファイル形式", examples=["pdf"])
+    extracted_text: str = Field(..., description="抽出されたテキスト全文")
+    char_count: int = Field(..., description="抽出された文字数")
+</file>
+
+<file path="src/api/shared_modules/__共有モジュール__">
+
+</file>
+
+<file path="src/core/__環境変数等__">
+
+</file>
+
+<file path="src/core/config.py">
+# src/core/config.py
+
+"""共通設定・環境変数の読み込み / GPU識別"""
+
+import torch
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """環境変数"""
+
+    # .env ファイルを自動で読み込み、定義していない変数は無視する
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    # .env から直接読み取る値
+    PORT: str = Field(..., description="ポート番号", examples=["8001"])
+    ACCESS_ALLOW_URL: str = Field(..., description="通信を許可するURL", examples=["http://localhost:8000"])
+
+    # None許容の値
+    HF_TOKEN: str | None = Field(None, description="HuggingFaceのアクセストークン(モデルダウンロード用)")
+
+
+settings = Settings()  # pyright: ignore[reportCallIssue]
+
+# ---------- 処理デバイスの識別 ----------
+
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+elif torch.backends.mps.is_available():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
+</file>
+
+<file path="src/core/model_state.py">
+# src/core/model_state.py
+
+"""モデル状態管理モジュール
+
+Doclingのコンバーターなど、起動時に初期化し、
+アプリケーション全体で共有する重いオブジェクトを管理します。
+"""
+
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.document_converter import DocumentConverter, PdfFormatOption
+
+
+class ModelState:
+    """アプリケーションのグローバル状態を保持するクラス"""
+
+    def __init__(self) -> None:
+        """クラスの初期化"""
+        self.converter: DocumentConverter | None = None
+
+    def initialize_converter(self) -> None:
+        """Doclingのコンバーターを最適なオプションで初期化する"""
+        pipeline_options = PdfPipelineOptions()
+
+        # --- パイプラインオプションの設定 ---
+        pipeline_options.do_ocr = True  # OCR（光学的文字認識）機能を有効
+
+        pipeline_options.do_table_structure = True  # 表構造解析を有効化
+        pipeline_options.do_formula_enrichment = True  # 数式解析を有効化
+
+        self.converter = DocumentConverter(
+            format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
+        )
+
+
+# グローバルにアクセス可能なインスタンス
+model_state = ModelState()
+</file>
+
+<file path="src/main.py">
+# src/main.py
+
+"""FastAPIのエントリーポイント"""
+
+import logging
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+# ルーター
+from src.api.mode.deep import deep_router
+
+# 環境変数・状態管理
+from src.core.config import device, settings
+from src.core.model_state import model_state
+
+# ==========================================
+# ログ設定の初期化
+# ==========================================
+
+"""
+DEBUG (10): 開発時の動作確認など、詳細な情報。
+INFO (20): 正常な動作の記録。
+WARNING (30): エラーではないが、注意が必要な状態。
+ERROR (40): 重大な問題が発生し、一部の機能が実行できなかった状態。
+CRITICAL (50): プログラム自体が停止してしまうような致命的なエラー。
+"""
+
+# --- ログの基本設定 ---
+logging.basicConfig(
+    # ログレベルの閾値: 設定したレベル以上のログだけが出力される
+    level=logging.INFO,
+    # 出力形式の定義: "発生日時 - レベル - ロガー名(発生場所) - メッセージ"
+    format="|%(asctime)s|%(levelname)s|%(name)s| %(message)s",
+)
+
+# --- ロガーのインスタンス化 ---
+# __name__: 実行中のモジュール名(ファイル名)が自動挿入
+# --> どのファイルのどの部分でエラーが起きたのかを特定できる
+logger = logging.getLogger(__name__)
+
+# ==========================================
+# ライフサイクルイベント（起動・終了時の処理）
+# ==========================================
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator:
+    """アプリケーションのライフサイクル管理
+
+    - yield前: アプリ起動時の処理
+    - yield後: アプリ終了時の処理
+    """
+    # --- 起動時の処理 ---
+    logger.info("アプリケーションを起動しています...")
+    logger.info(f"処理デバイス: {device}")
+    logger.info("DoclingのDocumentConverterを初期化しています...")
+    model_state.initialize_converter()
+    logger.info("Doclingの初期化が完了しました。")
+    logger.info("アプリケーションを起動しました。リクエストを受け付けます。")
+
+    yield  # ← ここでアプリケーションが実行される
+
+    # --- 終了時の処理 ---
+    logger.info("アプリケーションを終了しています...")
+    logger.info("アプリケーションを終了しました。")
+
+
+# ==========================================
+# メタ情報の設定
+# ==========================================
+
+# プロジェクトのタイトル
+title_text = "Document-Extraction-Service"
+
+# プロジェクトのバージョン
+version_text = "1.0.0"
+
+# プロジェクトの概要
+summary_text = "アップロードされた文書ファイルからテキストを抽出する処理を提供します。"
+
+# プロジェクト説明
+description_text = """
+（詳細な説明を記述）
+""".strip()
+
+# APIのタグ情報
+tags_metadata = [
+    {"name": "テキスト抽出", "description": "アップロードされたドキュメントからテキストを抽出するAPIを提供します。"},
+    {"name": "動作確認", "description": "APIサーバーが正常に動作するかを確認します。"},
+]
+
+# 参照リンクの情報
+contact = {
+    "name": "GitHub",
+    "url": "https://github.com/takahiro-hirano67/Document-Extraction-Service",
+}
+
+# ==========================================
+# アプリケーションのインスタンス化
+# ==========================================
+
+app = FastAPI(
+    title=title_text,  # タイトル
+    version=version_text,  # バージョン
+    summary=summary_text,  # 概要
+    description=description_text,  # 説明
+    openapi_tags=tags_metadata,  # APIタグ
+    contact=contact,  # 参照リンク
+    lifespan=lifespan,  # ライフスパン指定
+)
+
+# ==========================================
+# CORS設定
+# ==========================================
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[settings.ACCESS_ALLOW_URL],  # 許可する通信元URL
+    allow_methods=["POST", "GET"],  # 許可するメソッド
+    allow_headers=["*"],  # 許可するリクエストヘッダー
+)
+
+# ==========================================
+# ルーター登録
+# ==========================================
+
+app.include_router(deep_router.router)  # 高精度テキスト抽出API
+# app.include_router(standard_router.router)  # 軽量テキスト抽出API
+
+
+# ==========================================
+# アプリ全体に適用する例外ハンドリング
+# ==========================================
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """アプリケーション全体でキャッチされなかった予期せぬ例外を処理する。
+
+    サーバーには詳細なログを残し、クライアントには安全なメッセージを返す。
+    想定内のエラー(ユーザー起因)については各ルーター内で明示的にキャッチ・発生させる。(404など)
+    """
+    # --- サーバーのログにレベル"ERROR"のスタックトレース（詳細）を出力 ---
+    logger.error(
+        f"システムエラーが発生しました: {request.method} {request.url}",
+        exc_info=True,  # 例外の詳細な発生経路を自動的に連結して出力
+    )
+
+    # クライアントには詳細を隠蔽した汎用的なエラーを返す (情報漏洩のリスク回避)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "status": "error",
+            "detail": "サーバー内部で予期せぬエラーが発生しました。しばらく経ってから再度お試しください。",
+        },
+    )
+
+
+# ==========================================
+# 動作確認用エンドポイント
+# ==========================================
+
+
+@app.get("/", tags=["動作確認"])
+def read_root() -> dict:
+    """ルートページ"""
+    return {"document": f"http://localhost:{settings.PORT}/docs"}
+</file>
+
+<file path=".env.example">
+# 起動するサーバーのポート番号
+SELF_PORT=8001
+# 通信を許可するURL
+ACCESS_ALLOW_URL=http://localhost:8000
+
+# HuggingFace
+HF_TOKEN=your-token-here
+</file>
+
+<file path=".python-version">
+3.14
+</file>
+
+<file path="Makefile">
+# Makefile
+
+# 環境変数
+-include .env
+export
+
+# 予約語の回避
+.PHONY: format lint
+
+# ==========================================
+# サーバー起動
+# ==========================================
+
+# FastAPIサーバー起動 (uvicorn)
+run:
+	uv run uvicorn src.main:app --host 0.0.0.0 --port ${PORT} --reload
+
+# ==========================================
+# Ruff操作
+# ==========================================
+
+# コードの自動フォーマット実行
+format:
+	uv run ruff format .
+
+# フォーマットのチェックのみ
+format-check:
+	uv run ruff format . --check
+
+# コードの自動修正実行 (※要事前コミット)
+lint:
+	uv run ruff check . --fix
+
+# 修正箇所のチェックのみ
+lint-check:
+	uv run ruff check .
+
+# ==========================================
+# ヘルプ
+# ==========================================
+
+help:
+	@echo ""
+	@echo "使用可能なコマンド一覧:"
+	@echo ""
+	@echo "  [Uvicorn] サーバー起動"
+	@echo "  make run            FastAPIサーバー起動 (ポート番号: ${PORT})"
+	@echo ""
+	@echo "  [Ruff] 静的解析・フォーマット"
+	@echo "  make format         コードの自動フォーマット実行"
+	@echo "  make format-check   フォーマットのチェックのみ"
+	@echo "  make lint           コードの自動修正実行 (※要事前コミット)"
+	@echo "  make lint-check     修正箇所のチェックのみ"
+	@echo ""
+</file>
+
+<file path="pyproject.toml">
+[project]
+name = "document-extraction-service"
+version = "0.1.0"
+description = "アップロードされた文書からテキストを抽出する処理を提供します。"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "docling>=2.92.0",
+    "fastapi[standard]>=0.136.1",
+    "torch>=2.11.0",
+    "torchvision>=0.26.0",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.2.0",
+    "jupyter>=1.1.1",
+    "pytest>=9.0.3",
+    "ruff>=0.15.12",
+]
+
+# --- Ruff全体の設定 ---
+[tool.ruff]
+# 対象のPythonバージョン
+target-version = "py313"
+# 1行の最大文字数
+line-length = 120
+
+# 除外するディレクトリ
+exclude = [
+    ".venv",
+    ".git",
+    "__pycache__",
+    "build",
+    "dist",
+    "notebooks",
+]
+
+# --- Ruffのルールに関する設定 ---
+[tool.ruff.lint]
+# 有効にするルール
+select = [
+    "F",   # Pyflakes (未定義・未使用の変数やインポート)
+    "E",   # pycodestyle Error (スタイルガイド(PEP8)に沿っているか)
+    "W",   # pycodestyle Warning (スタイルガイド(PEP8)に沿っているか)
+    "I",   # isort (import順序の最適化)
+    "N",   # pep8-naming (関数や変数の命名がスタイルガイド(PEP8)に従っているか)
+    "D",   # pydocstyle (ドキュメンテーション文字列(Docstring)に関するルール)
+    "UP",  # pyupgrade (新しいPython記法への自動アップデート)
+    "B",   # flake8-bugbear (バグになりやすい問題や設計上の問題を検出)
+    "S",   # flake8-bandit (evalなどの安全ではないコードを検出)
+    "SIM", # flake8-simplify (コードをシンプルにできる箇所の指摘 | ネストされたif文など)
+    "ANN", # flake8-annotations (型ヒントに関するルール)
+    "TCH",  # flake8-type-checking (型チェック用インポートの最適化)
+]
+
+# 無視するルール
+ignore = [
+    "E501", # 1行あたりの行の長さのルール (Formatterに任せるためLintでは無視)
+    "B008", # デフォルト引数で関数呼び出しをしないルール (FastAPIのQuery()と競合するため無効)
+    "D203", # クラス定義の前に空行を入れるルール (D211(クラス定義の前に空行を入れてはいけないルール)と競合するため無効)
+    "D213", # Docstringの要約行の位置を2行目にするルール (D212(要約行の位置を1行目にするルール)と競合するため無効)
+    "D400", # Docstringの1行目にピリオドを付けるルール (日本語の文章と競合するため無効)
+    "D415", # Docstringの1行目の末尾に符号を付けるルール（日本語の文章と競合するため無効）
+]
+
+# --- 特定のファイルだけルールを無視する設定 ---
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"] # __init__.py では「未使用のimport」を許可する
+"src/tests/**/**/*.py" = ["S101", "ANN"] # テストコードでは assert の使用を許可する (banditルールのS101)
+
+# --- Ruffによるフォーマットの設定 ---
+[tool.ruff.format]
+# ダブルクォーテーションに統一
+quote-style = "double"
+# インデントはスペース
+indent-style = "space"
+
+# --- pytestの設定 ---
+[tool.pytest.ini_options]
+# テスト実行時にプロジェクトルートをモジュール検索パス(sys.path)に追加する
+# テストコード内から絶対パスインポートが可能になる
+pythonpath = ["."]
+
+# pytestがデフォルトでテストを認識するディレクトリを指定
+testpaths = ["src/tests"]
+
+# テストID（parametrize等で指定する文字列）のUnicodeエスケープを無効化する
+# テスト結果出力時の日本語が文字化けして表示されるのを防ぐ
+disable_test_id_escaping_and_forfeit_all_rights_to_community_support = true
+</file>
+
+<file path="README.md">
+# Document-Extraction-Service
+
+アップロードされた文書ファイルからテキストを抽出する処理を提供します。
+
+## PyTorch で MPS を利用するために必要なライブラリ
+
+`PyTorch` の他に、 `torchvision` もセットでインストールしておく
+
+- `torch`: 多次元配列の計算
+- `torchvision`: 画像データの読み込み
+
+## 参考リンク
+
+* [Docling](https://www.docling.ai)
+* [Docling GitHub](https://github.com/docling-project/docling)
+
+## ディレクトリ構造 (Project-Treeによる自動出力)
+
+
+```
+Document-Extraction-Service
+├─ .python-version
+├─ Makefile
+├─ README.md
+├─ data
+│  ├─ __検証用のサンプルデータ配置__
+│  ├─ sample_docx_data
+│  │  └─ __DOCX形式のサンプル__
+│  ├─ sample_patent_pdf_data
+│  │  └─ __特許公報PDFのサンプル__
+│  ├─ sample_pdf_data
+│  │  └─ __PDF形式のサンプル__
+│  └─ sample_xlsx_data
+│     └─ __XLSX形式のサンプル__
+├─ notebooks
+│  ├─ 01_テキスト抽出テスト.ipynb
+│  └─ __開発検証用ノートブック__
+├─ pyproject.toml
+├─ repomix.config.json
+├─ src
+│  ├─ api
+│  │  ├─ mode
+│  │  │  ├─ __抽出モード別の処理実装__
+│  │  │  ├─ deep
+│  │  │  │  ├─ __高精度抽出モード__
+│  │  │  │  ├─ deep_router.py
+│  │  │  │  ├─ services
+│  │  │  │  │  └─ deep_service.py
+│  │  │  │  └─ utils
+│  │  │  │     └─ markdown_cleaner.py
+│  │  │  └─ standard
+│  │  │     └─ __標準抽出モード__
+│  │  └─ shared_modules
+│  │     ├─ __共有モジュール__
+│  │     └─ schemas
+│  │        └─ extract_schema.py
+│  ├─ core
+│  │  ├─ __環境変数等__
+│  │  ├─ config.py
+│  │  └─ model_state.py
+│  └─ main.py
+├─ uv.lock
+└─ プロジェクト全体のコード.xml
+
+```
+</file>
+
+</files>

@@ -1,0 +1,52 @@
+{
+    "input": {
+        "maxFileSize": 52428800
+    },
+    "output": {
+        "filePath": "プロジェクト全体のコード.xml",
+        "style": "xml",
+        "parsableStyle": false,
+        "headerText": "Document-Extraction-Service",
+        "instructionFilePath": "",
+        "fileSummary": true,
+        "directoryStructure": true,
+        "files": true,
+        "removeComments": false,
+        "removeEmptyLines": false,
+        "compress": false,
+        "topFilesLength": 5,
+        "showLineNumbers": false,
+        "truncateBase64": false,
+        "copyToClipboard": false,
+        "includeFullDirectoryStructure": false,
+        "tokenCountTree": false,
+        "git": {
+            "sortByChanges": false,
+            "sortByChangesMaxCommits": 100,
+            "includeDiffs": false,
+            "includeLogs": false,
+            "includeLogsCount": 50
+        }
+    },
+    "include": [],
+    "ignore": {
+        "useGitignore": true,
+        "useDotIgnore": true,
+        "useDefaultPatterns": true,
+        "customPatterns": [
+            "**.xml",
+            "**.csv",
+            "**.pdf",
+            "**.ipynb",
+            "**.gitkeep",
+            ".gitignore",
+            "repomix.config.json"
+        ]
+    },
+    "security": {
+        "enableSecurityCheck": true
+    },
+    "tokenCount": {
+        "encoding": "o200k_base"
+    }
+}
