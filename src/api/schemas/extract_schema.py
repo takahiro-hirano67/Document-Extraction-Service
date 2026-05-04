@@ -32,4 +32,5 @@ class ExtractTextResponse(BaseModel):
     status: str = Field("success", description="ステータス", examples=["success"])
     filename: str = Field(..., description="アップロードされたファイル名", examples=["document.pdf"])
     file_type: str = Field(..., description="判定されたファイル形式", examples=["pdf"])
+    is_patent: bool = Field(default=False, description="特許公報PDFとして判定されたか")
     extracted_text: str = Field(..., description="抽出されたテキスト全文")

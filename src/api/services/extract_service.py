@@ -19,7 +19,7 @@ from ..extractors.text_extractor import extract_from_text
 from ..extractors.xlsx_extractor import extract_from_xlsx
 
 
-def extract_text_from_file(file: UploadFile, extension: str) -> str:
+def extract_text_from_file(file: UploadFile, extension: str) -> tuple[str, bool]:
     """アップロードされたファイルからテキストを抽出する
 
     Args:
@@ -27,7 +27,7 @@ def extract_text_from_file(file: UploadFile, extension: str) -> str:
         extension (str): 小文字化された拡張子 (例: '.pdf')
 
     Returns:
-        str: 抽出されたテキスト
+        tuple[str, bool]: 抽出されたテキスト, 特許公報判定フラグ
 
     """
     if not file.filename:
@@ -38,7 +38,9 @@ def extract_text_from_file(file: UploadFile, extension: str) -> str:
     content = file.file.read()
     file_stream = io.BytesIO(content)
 
+    # 結果格納変数
     extracted_text = ""
+    is_patent = False
 
     # --- 各ファイル形式の処理 ---
     if extension == ".docx":
@@ -48,7 +50,8 @@ def extract_text_from_file(file: UploadFile, extension: str) -> str:
     elif extension == ".pptx":
         extracted_text = extract_from_pptx(file_stream)
     elif extension == ".pdf":
-        extracted_text = extract_from_pdf_with_docling(file_stream)
+        # 内部で特許公報かどうか判定する
+        extracted_text, is_patent = extract_from_pdf_with_docling(file_stream)
     elif extension in {".txt", ".md"}:
         extracted_text = extract_from_text(content)
     elif extension in {".png", ".jpg", ".jpeg"}:
@@ -58,4 +61,4 @@ def extract_text_from_file(file: UploadFile, extension: str) -> str:
     if extracted_text is None:
         raise ValueError(f"抽出されたデータが存在しません: {file.filename}")
 
-    return extracted_text.strip()
+    return extracted_text.strip(), is_patent

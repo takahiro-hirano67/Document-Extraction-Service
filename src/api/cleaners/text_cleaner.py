@@ -16,23 +16,26 @@ def normalize_text(text: str) -> str:
     return text
 
 
-def clean_docling_markdown(text: str) -> str:
+def clean_docling_markdown(text: str) -> tuple[str, bool]:
     """抽出されたMarkdownテキストを、LLMやフロントエンドが解釈しやすい形に整形する
 
     Args:
         text (str): Doclingから出力された生のMarkdownテキスト
 
     Returns:
-        str: 整形されたMarkdownテキスト
+        tuple[str, bool]: 整形されたMarkdownテキスト, 特許公報判定フラグ
 
     """
     # テキストの正規化
     text = normalize_text(text)
     # 日本語間スペース除去 (ASCII以外＝日本語ほぼ全て)
     text = re.sub(r"(?<=[^\x00-\x7F]) (?=[^\x00-\x7F])", "", text)
+    # 特許公報かどうかの判定
+    is_patent = False
     if re.search(PATENT_PATTERN, text):
-        """特許公報だった場合の整形処理"""
+        # 特許公報だった場合の整形処理
+        is_patent = True
         text = clean_patent_text(text)
     # 3つ以上の空行を2つにまとめる - 改行数の調整
     text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+    return text.strip(), is_patent
