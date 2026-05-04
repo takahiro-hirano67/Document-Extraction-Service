@@ -15,14 +15,14 @@ from src.core.model_state import model_state
 from ..cleaners.text_cleaner import clean_docling_markdown
 
 
-def extract_from_pdf_with_docling(file_stream: io.BytesIO) -> str:
+def extract_from_pdf_with_docling(file_stream: io.BytesIO) -> tuple[str, bool]:
     """アップロードされたファイルからDoclingを用いてMarkdownを抽出する
 
     Args:
         file_stream(io.BytesIO): PDF ファイルの BytesIO ストリーム
 
     Returns:
-        str: 抽出・構造化されたMarkdownテキスト
+        tuple[str, bool]: 抽出・構造化されたMarkdownテキスト, 特許公報判定フラグ
 
     Raises:
         RuntimeError: Doclingのコンバーターが初期化されていない場合
@@ -41,6 +41,6 @@ def extract_from_pdf_with_docling(file_stream: io.BytesIO) -> str:
     markdown_text = conversion_result.document.export_to_markdown()
 
     # --- 4. Markdown出力の整形 ---
-    markdown_text = clean_docling_markdown(markdown_text)
+    markdown_text, is_patent = clean_docling_markdown(markdown_text)
 
-    return markdown_text.strip()
+    return markdown_text.strip(), is_patent

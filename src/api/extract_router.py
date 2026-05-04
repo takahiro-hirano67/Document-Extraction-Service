@@ -56,6 +56,8 @@ async def extract_text(
         - Excel: 全シートのセルデータ（数式ではなく計算後の値）
         - PowerPoint: 全スライドのテキスト、グループ化図形内テキスト、表、スライドノート
         - 画像: VLM(視覚言語モデル)を用いて、写真やスキャンデータから視覚的にテキストを抽出
+    - **文書判定**:
+        - 特許公報PDFだった場合、is_patentがTrueになります。
 
     ### 注意点・限界
     - Excel: Markdown形式の表出力には対応していません。多様な形式に対応するため、CSVライクなカンマ区切りを採用しています。
@@ -96,13 +98,14 @@ async def extract_text(
     await validate_file_security(file_object, extension)
 
     # --- テキスト抽出処理実行 ---
-    text = extract_service.extract_text_from_file(file_object, extension)
+    text, is_patent = extract_service.extract_text_from_file(file_object, extension)
 
     # --- レスポンス構築 ---
     response_json = ExtractTextResponse(
         status="success",
         filename=file_object.filename,
         file_type=extension.replace(".", ""),  # ".pdf" -> "pdf"
+        is_patent=is_patent,  # 特許公報として判定されたか
         extracted_text=text,
     )
 
